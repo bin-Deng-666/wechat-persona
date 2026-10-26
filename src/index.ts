@@ -27,6 +27,7 @@ import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } fro
 import type { MessageItem } from './ilink/types.ts'
 import { PeerSessions, type AgentRegistryLike } from './bridge/session.ts'
 import { Channel } from './channel/runtime.ts'
+import { TypingIndicator } from './channel/typing.ts'
 import { LoginSession } from './channel/login-session.ts'
 import { createPanel, PANEL_PATH, PANEL_PREFIX, type ChatSummary, type PanelStatus, type PersonaSummary } from './channel/panel.ts'
 import { renderQrSvg } from './channel/qr.ts'
@@ -280,6 +281,7 @@ class Coordinator {
         onError: error => { this.report('会话释放失败', { error: String(error) }) },
       })
       const api = createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' })
+      const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
       const replies = new ReplyQueue({
         send: async (peerId, text, contextToken) => {
           await api.sendText({
@@ -291,6 +293,8 @@ class Coordinator {
             text,
             ...(contextToken === undefined ? {} : { contextToken }),
           })
+          // 发出去了才取消「正在输入」，否则手机那头会一直转。
+          void typing.stop(peerId)
         },
         onGiveUp: (peerId, text, error) => { this.report('回复最终失败', { peerId, chars: text.length, error: String(error) }) },
         maxChars: 2_000,
@@ -306,6 +310,7 @@ class Coordinator {
         defaultPersona: this.config.defaultPersona.get(),
         settings: this.chatSettings,
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
+        typing,
         replies,
         events: this.ctx as never,
         report: this.report,

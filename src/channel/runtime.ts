@@ -58,6 +58,8 @@ export interface ChannelOptions {
   timeZone?: string
   /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
   settings?: ChatSettingsStore
+  /** 输入状态上报；缺失表示不上报（headless 也能跑）。 */
+  typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
   /** 发一张本地表情；返回是否发出。缺失表示这个部署没有表情库。 */
   sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
@@ -191,6 +193,8 @@ export class Channel {
     if (message.context_token !== undefined && message.context_token !== '') {
       this.contextTokens.set(peerId, message.context_token)
     }
+    // 让手机那头看到「对方正在输入」。失败无所谓，所以不 await。
+    void this.options.typing?.start(peerId, message.context_token)
 
     const sessionId = sessionIdFor(peerId)
     this.peerBySession.set(sessionId, peerId)

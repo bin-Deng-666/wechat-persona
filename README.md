@@ -66,6 +66,16 @@ wechat-persona/
 
 > 同一时间只能有一个 iLink 客户端登录同一个 bot；如果同时装了 `dsh-channel-wechat`，两个会互相踢。
 
+## 连通性自检
+
+不启动 DSH、不扫码，验证协议还能用：
+
+```bash
+node --experimental-strip-types scripts/probe-login.ts
+```
+
+成功会打印二维码 URL 和一次状态查询结果（`wait`）。它不写凭据，二维码几分钟后自然过期。
+
 ## 本地开发
 
 ```bash

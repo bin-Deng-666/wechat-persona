@@ -406,3 +406,30 @@ describe('回复里的表情标记', () => {
     assert.deepEqual(sent, [])
   })
 })
+
+
+describe('输入状态', () => {
+  it('收到消息时开始上报「正在输入」', async () => {
+    const { sessions } = fakeSessions()
+    const { events } = fakeEvents()
+    const started: { peerId: string; token: string | undefined }[] = []
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      typing: {
+        start: async (peerId, token) => { started.push({ peerId, token }) },
+        stop: async () => {},
+      },
+    })
+    await channel.handle(userMessage())
+    assert.deepEqual(started, [{ peerId: 'wxid-owner', token: 'ctx-1' }])
+  })
+})
