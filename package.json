@@ -36,7 +36,7 @@
     "NOTICE.md"
   ],
   "scripts": {
-    "build": "tsc --noEmit && node -e \"console.log('build: tsdown 待装（见 docs/roadmap.md M1）')\"",
+    "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "clean": "rm -rf lib"
@@ -45,6 +45,7 @@
     "@deepseek-ai/cordis": "^4.0.4",
     "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^24.10.1",
+    "tsdown": "^0.23.2",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {

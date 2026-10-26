@@ -7,8 +7,10 @@
 - [x] 目录与分层
 - [x] 构建配置（tsdown + tsc）
 - [x] 设计文档、ADR、协议笔记
-- [ ] 配置 schema（`src/config.ts`）
-- [ ] 插件入口能空跑：装进 profile 不崩、GUI 出现配置页
+- [x] 配置 schema（`src/config.ts`，全 volatile 以便 GUI 可编辑）
+- [x] 插件入口能空跑：`apply` 校验 cwd、扫人格目录、报告结果，不依赖任何宿主服务
+- [x] `tsc --noEmit` 与 `tsdown` 构建通过；产物 `lib/index.js` 可被 Node 加载
+- [ ] 装进 `desktop` profile 实测（需要完全重启 DSH，等 M1 有实际功能后再做）
 
 **验收**：`pnpm build` 通过；装进 `desktop` profile 后 DSH 正常启动，Plugins 页能看到本插件。
 
