@@ -76,15 +76,14 @@ describe('文案', () => {
 
 describe('formatStyle', () => {
   it('说明当前分条方式与来源', () => {
-    const text = formatStyle({ maxChars: 120, split: 'sentence', maxBubbles: 4, overridden: false })
-    assert.match(text, /最多 4 条/)
+    const text = formatStyle({ maxChars: 120, split: 'sentence', overridden: false })
     assert.match(text, /120 字/)
     assert.match(text, /按句子切/)
     assert.match(text, /人格卡/)
   })
 
   it('聊天设置覆盖时点明来源', () => {
-    const text = formatStyle({ maxChars: 300, split: 'none', maxBubbles: 4, overridden: true })
+    const text = formatStyle({ maxChars: 300, split: 'none', overridden: true })
     assert.match(text, /不切/)
     assert.match(text, /这个聊天的设置/)
   })

@@ -112,7 +112,7 @@ npm run login                      # 可加 --png /tmp/qr.png 把二维码写成
 
 | 行为 | 规则 | 想改怎么办 |
 |---|---|---|
-| 分条 | 按人格卡的 `reply.maxChars`（默认 120 字）切，最多 4 条，条间隔 1.2 秒 | `/style 160`、`/style sentence`、`/style reset` |
+| 分条 | **默认一条发完**：不超过 600 字就一条；超了才按段落切，每条不超过上限 | `/style 200`、`/style sentence`（碎碎念）、`/style none` |
 | 连发合并 | 700 毫秒内的几条消息合并成一轮，不会一问三答 | 改 `mergeWindowMs`（代码默认值） |
 | 长任务 | 超过 25 秒没输出先回一句「还在弄」 | 改 `progressAfterMs` |
 | 失败 | 模型报错、被截断、被中断都会回一句原因，不静默 | — |

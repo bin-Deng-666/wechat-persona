@@ -790,7 +790,6 @@ export class Channel {
           reply(formatStyle({
             maxChars: plan.softChars,
             split: plan.splitMode,
-            maxBubbles: plan.maxBubbles,
             overridden: current.maxChars !== undefined || current.split !== undefined,
           }))
           return

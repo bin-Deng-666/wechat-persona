@@ -125,8 +125,6 @@ export interface StyleInput {
   maxChars: number
   /** 切分粒度。 */
   split: 'paragraph' | 'sentence' | 'none'
-  /** 一次最多几条。 */
-  maxBubbles: number
   /** 这些值是不是这个聊天自己的设置（否则来自人格卡）。 */
   overridden: boolean
 }
@@ -137,9 +135,9 @@ export interface StyleInput {
  */
 export function formatStyle(input: StyleInput): string {
   const lines = [
-    `分条：最多 ${String(input.maxBubbles)} 条，每条约 ${String(input.maxChars)} 字，按${
+    `分条：每条约 ${String(input.maxChars)} 字，按${
       input.split === 'sentence' ? '句子' : input.split === 'none' ? '不切' : '段落'
-    }切`,
+    }切（不超过 ${String(input.maxChars)} 字就一条发完）`,
     `来源：${input.overridden ? '这个聊天的设置' : '人格卡'}（/style reset 恢复人格卡）`,
   ]
   lines.push('调整：/style 160 改字数；/style sentence 按句切；/style none 不切。')
