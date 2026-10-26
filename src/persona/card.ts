@@ -19,11 +19,6 @@ export interface PersonaPrompt {
   forbidden: string[]
 }
 
-export interface PersonaSampling {
-  temperature: number
-  maxTokens: number
-}
-
 /** 出站文本的硬约束：先写进 prompt，发送时再切。 */
 export interface PersonaReply {
   maxChars: number
@@ -31,7 +26,7 @@ export interface PersonaReply {
 }
 
 export interface PersonaMedia {
-  understandImages: boolean
+  /** 是否把当前联系人的表情目录与识别指令写进系统提示词。 */
   sendStickers: boolean
 }
 
@@ -43,13 +38,10 @@ export interface PersonaExample {
 export interface PersonaCard {
   id: string
   name: string
-  aliases: string[]
   description: string
   prompt: PersonaPrompt
-  sampling: PersonaSampling
   reply: PersonaReply
   examples: PersonaExample[]
-  greeting: string
   media: PersonaMedia
 }
 
@@ -70,9 +62,8 @@ const MAX_ITEM_CHARS = 60
 const MAX_EXAMPLES = 5
 
 const DEFAULTS = {
-  sampling: { temperature: 0.7, maxTokens: 800 },
   reply: { maxChars: 120, split: 'paragraph' as const },
-  media: { understandImages: true, sendStickers: true },
+  media: { sendStickers: true },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,12 +182,6 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
     forbidden: readList(promptSource, 'forbidden', 'prompt', warnings),
   }
 
-  const samplingRaw = isRecord(raw.sampling) ? raw.sampling : {}
-  const sampling: PersonaSampling = {
-    temperature: readNumber(samplingRaw.temperature, DEFAULTS.sampling.temperature, 'sampling.temperature', warnings, 0, 2),
-    maxTokens: Math.round(readNumber(samplingRaw.maxTokens, DEFAULTS.sampling.maxTokens, 'sampling.maxTokens', warnings, 64, 32_768)),
-  }
-
   const replyRaw = isRecord(raw.reply) ? raw.reply : {}
   const splitRaw = replyRaw.split
   const split: PersonaReply['split'] =
@@ -232,16 +217,28 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
 
   const mediaRaw = isRecord(raw.media) ? raw.media : {}
   const media: PersonaMedia = {
-    understandImages: mediaRaw.understandImages !== false,
     sendStickers: mediaRaw.sendStickers !== false,
   }
+  if (mediaRaw.understandImages !== undefined) {
+    warnings.push({
+      path: 'media.understandImages',
+      message: '视觉能力由宿主和当前模型探测，这个字段不再生效',
+      severity: 'warn',
+    })
+  }
 
-  // 不认识的字段要说话：`proactive` 被移除后，照旧写法会被静默忽略，
-  // 用户只会觉得「我明明配了它却不主动」。
-  const KNOWN_KEYS = new Set(['id', 'name', 'aliases', 'description', 'prompt', 'sampling', 'reply', 'examples', 'greeting', 'media', 'proactive'])
+  // 已移除的字段要说话：静默忽略会让用户以为「配了却没生效」。
+  const REMOVED_KEYS: Record<string, string> = {
+    proactive: '主动搭话已移除，这个字段不再生效',
+    sampling: '采样参数由 DSH 会话决定，卡片里的采样设置不再生效',
+    greeting: 'greeting 从未生效，已移除',
+    aliases: 'aliases 只对群聊有意义，本项目不支持群聊，已移除',
+  }
+  const KNOWN_KEYS = new Set(['id', 'name', 'description', 'prompt', 'reply', 'examples', 'media'])
   for (const key of Object.keys(raw)) {
-    if (key === 'proactive') {
-      warnings.push({ path: 'proactive', message: '主动搭话已移除，这个字段不再生效', severity: 'warn' })
+    const removed = REMOVED_KEYS[key]
+    if (removed !== undefined) {
+      warnings.push({ path: key, message: removed, severity: 'warn' })
       continue
     }
     if (!KNOWN_KEYS.has(key)) warnings.push({ path: key, message: '不认识的字段，已忽略', severity: 'warn' })
@@ -249,23 +246,16 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
 
   if (issues.length > 0) return { ok: false, issues }
 
-  const aliases = Array.isArray(raw.aliases)
-    ? raw.aliases.map(asString).filter((value): value is string => value !== undefined)
-    : []
-
   return {
     ok: true,
     warnings,
     card: {
       id: id as string,
       name: name as string,
-      aliases,
       description: asString(raw.description) ?? '',
       prompt,
-      sampling,
       reply,
       examples,
-      greeting: asString(raw.greeting) ?? '',
       media,
     },
   }

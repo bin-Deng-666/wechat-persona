@@ -1,0 +1,13 @@
+# Normalize line endings for text; keep binary assets untouched.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.tgz binary
+
+package-lock.json -diff linguist-generated=true
+lib/** linguist-generated=true
+release/** linguist-generated=true

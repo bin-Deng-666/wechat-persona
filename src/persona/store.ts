@@ -40,7 +40,6 @@ export interface PersonaSnapshot {
 export const BUILTIN_DEFAULT: PersonaCard = {
   id: 'default',
   name: '小助手',
-  aliases: [],
   description: '内置兜底人格：没有可用人格卡时使用',
   prompt: {
     identity: '你是一个住在微信里的助手，说话直接、简短、不客套。你可以读写这台电脑上的文件、执行命令、查资料。',
@@ -48,11 +47,9 @@ export const BUILTIN_DEFAULT: PersonaCard = {
     rules: ['不确定就直说', '改文件前说清改哪里'],
     forbidden: ['不复述对方原话', '不编造执行结果'],
   },
-  sampling: { temperature: 0.7, maxTokens: 800 },
   reply: { maxChars: 120, split: 'paragraph' },
   examples: [],
-  greeting: '',
-  media: { understandImages: true, sendStickers: true },
+  media: { sendStickers: true },
 }
 
 /**

@@ -17,7 +17,7 @@
 
 - `src/ilink/` 按官方协议文档实现；遇到边界行为（字段必填性、限流、长文拒绝）时，
   以 dsh-channel-wechat 的实现与它的 `docs/recon/` 记录为参照，改编处保留 MIT 署名
-- `src/persona/`、`src/bridge/` 完全自己写，不复制对方的 bridge 逻辑
+- 人格、聊天状态、表情和 DSH 适配层完全自己写，不复制对方的 bridge 逻辑；当前代码归属见 [目录设计](../structure.md)
 - 不把 `dsh-channel-wechat` 作为运行时依赖：两个插件同时装会抢同一个 iLink 会话，
   且它的会话代次、命令集、审批卡策略与我们的 per-chat 人格模型冲突
 

@@ -21,8 +21,8 @@ import qrcode from 'qrcode-generator'
 import { createApiClient } from '../src/ilink/api.ts'
 import { fetchQr, pollStatus } from '../src/ilink/login.ts'
 import { advance, initialState, withInitialQr, withRefreshedQr, withVerifyCode, type LoginEffect, type LoginState } from '../src/ilink/login-machine.ts'
-import { saveAccount } from '../src/credentials.ts'
-import { matrixToPng } from './png.ts'
+import { saveAccount } from '../src/auth/credentials.ts'
+import { matrixToPng } from '../src/auth/png.ts'
 
 /** 把二维码同时写成 PNG（方便聊天窗口里扫）。 */
 async function writeQrPng(url: string, path: string): Promise<void> {

@@ -13,10 +13,11 @@
 
 | 文档 | 内容 |
 |---|---|
+| [structure.md](structure.md) | 当前文件树、依赖边界、代码与测试归属 |
 | [design.md](design.md) | 分层、数据流、6 条不变量、已知边界 |
 | [modules/ilink.md](modules/ilink.md) | 协议层：文件职责、错误分类、退避策略归属 |
-| [modules/bridge.md](modules/bridge.md) | 桥接层：会话映射、回复路径、准入 |
-| [modules/client.md](modules/client.md) | 面板与客户端（含桌面版为何不可用的结论） |
+| [modules/dsh.md](modules/dsh.md) | DSH 适配：会话、系统提示词、附件、事件和审批 |
+| [modules/panel.md](modules/panel.md) | 服务端网页面板与桌面版登录限制 |
 | [protocol.md](protocol.md) | iLink 接口速查、必填字段、踩过的坑 |
 
 ## 想知道为什么这么定

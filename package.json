@@ -5,6 +5,26 @@
   "type": "module",
   "description": "微信单聊人格聊天通道（DSH 插件，基于腾讯 iLink 官方协议）",
   "license": "MIT",
+  "author": "wechat-persona contributors",
+  "homepage": "https://github.com/bin-Deng-666/wechat-persona#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bin-Deng-666/wechat-persona.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bin-Deng-666/wechat-persona/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "wechat",
+    "weixin",
+    "ilink",
+    "chatbot",
+    "persona",
+    "llm-agent"
+  ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
     "dsh": ">=0.2.0-rc.1"
@@ -31,7 +51,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
     "clean": "rm -rf lib",
     "login": "node --experimental-strip-types scripts/login.ts",
     "pack": "npm pack --pack-destination release"

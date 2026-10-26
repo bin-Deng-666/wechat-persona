@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/bin-Deng-666/wechat-persona/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue for security problems.
+  - name: Read the docs first
+    url: https://github.com/bin-Deng-666/wechat-persona/blob/main/docs/README.md
+    about: Install, login, data layout, protocol notes and troubleshooting.
+  - name: Usage question
+    url: https://github.com/bin-Deng-666/wechat-persona/discussions
+    about: Ask how to set something up instead of filing a bug.

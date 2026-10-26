@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Keep the host packages moving together: they are versioned as one set.
+      deepseek-dsh:
+        patterns:
+          - '@deepseek-ai/*'
+    ignore:
+      # The host packages track a release candidate line; bump them deliberately.
+      - dependency-name: '@deepseek-ai/*'
+        update-types: ['version-update:semver-major', 'version-update:semver-minor']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

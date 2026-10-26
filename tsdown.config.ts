@@ -1,9 +1,9 @@
 import type { UserConfig } from 'tsdown'
 
 /**
- * Host 半边构建。浏览器半边是手写 JS，由 scripts/copy-client.mjs 原样拷贝。
+ * 构建插件的公开入口；面板 HTML 由 panel/page.ts 在服务端直接渲染。
  *
- * 所有 @deepseek-ai/* 保持运行时 require：profile 宿主只有一个 cordis 实例，
+ * 所有 @deepseek-ai/* 保持为宿主提供的外部依赖：profile 只有一个 cordis 实例，
  * 打包一份副本会分裂服务身份（症状是每条消息都失败）。
  */
 const config: UserConfig = {

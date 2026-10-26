@@ -1,0 +1,66 @@
+name: Feature request
+description: Propose a capability or a behaviour change.
+title: 'feat: '
+labels: ['enhancement', 'needs-triage']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem before the solution. Some requests are blocked
+        by the protocol itself, so it helps to know what you are actually trying to do.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before filing
+      options:
+        - label: I read docs/roadmap.md to see whether this is already planned or explicitly out of scope.
+          required: true
+        - label: I searched existing issues and discussions.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today, and why does it matter?
+      placeholder: I want the bot to gather a daily summary, but I cannot schedule it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: What should happen instead? Concrete examples of the input and output are ideal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you tried, or other designs you weighed.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Persona and system prompt
+        - Chat settings and commands
+        - Media (image, GIF, stickers)
+        - Memory
+        - Reply pacing and splitting
+        - DSH session integration
+        - Approval and tools
+        - Panel and routes
+        - Docs and developer experience
+        - Other
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Protocol constraints you found, links to reference implementations, or related issues.

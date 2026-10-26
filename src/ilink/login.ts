@@ -22,9 +22,6 @@ export const QR_BOT_TYPE = '3'
 /** 状态轮询允许服务端 hold 的时长。 */
 export const POLL_TIMEOUT_MS = 40_000
 
-/** 一次登录从取码到确认的总预算。 */
-export const LOGIN_DEADLINE_MS = 5 * 60_000
-
 export interface QrCode {
   /** 轮询时回传的值。 */
   qrcode: string

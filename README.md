@@ -1,5 +1,9 @@
 # wechat-persona
 
+[![CI](https://github.com/bin-Deng-666/wechat-persona/actions/workflows/ci.yml/badge.svg)](https://github.com/bin-Deng-666/wechat-persona/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%5E22.19.0%20%7C%7C%20%3E%3D24-brightgreen.svg)](package.json)
+
 运行在 DSH 进程内的微信单聊人格通道，通过腾讯 iLink Bot 接口收发消息，复用宿主的模型、工具、权限与持久化会话。
 
 当前代码支持人格聊天、图片理解、GIF 预览、自动表情收藏、按需多条回复、中文设置、记忆和文件回传。类型检查、单元测试与集成测试覆盖本地流程；微信客户端上的动图展示仍需真机验收。
@@ -23,7 +27,7 @@
 | 新对话 | 新开一段上下文，保留旧记录 |
 | 状态 | 看当前人格、对话代次、消息数和权限 |
 | 人格 | 列出人格卡 |
-| 人格 xiao-jing | 切换人格 |
+| 人格 jarvis | 切换人格 |
 | 分条 | 看当前发送方式 |
 | 分条 160 | 覆盖单条目标字数 |
 | 分条 按句 / 按段 / 不切 / 恢复 | 调整分条方式，或恢复人格卡设置 |
@@ -61,19 +65,22 @@
 
 ```text
 src/
-├── index.ts                 宿主接线、登录态、生命周期、文件发送
-├── config.ts                插件配置
-├── credentials.ts           登录凭据原子写入
-├── ilink/                   登录、轮询、消息、媒体 CDN、AES、上传
-├── bridge/
-│   ├── prompt.ts            会话作用域系统提示词
-│   ├── session.ts           peer 与 DSH 会话的创建、恢复、借用
-│   ├── media.ts / gif.ts     媒体处理和 GIF 多帧预览
-│   ├── reply.ts / bubbles.ts 有序回复队列和可选消息边界
-│   └── ...                  准入、代次、记忆、文本与审批
-├── persona/                 人格卡、聊天设置、素材和表情目录
-└── channel/                 轮询运行时、中文指令、菜单、面板与输入状态
+├── index.ts        公共导出入口
+├── app/            插件安装、服务装配、账号和通道生命周期、日志
+├── auth/           登录流程、凭据、二维码
+├── wechat/         消息通道、命令执行、数字菜单、准入、输入状态
+├── ilink/          微信协议、API、登录状态机、CDN、AES、收发
+├── dsh/            会话、系统提示词、附件、事件、审批的宿主适配
+├── chat/           聊天设置、对话代次、记忆、活跃状态
+├── persona/        人格卡校验、加载和提示词渲染
+├── stickers/       表情原件和联系人目录；独立的文本标记解析
+├── media/          通用图片格式识别、GIF 预览
+├── reply/          文字/表情发送队列、分条与重试
+├── text/           长文切分、数字归一化、定位链接
+└── panel/          网页渲染、HTTP 处理和宿主路由注册
 ```
+
+完整目录、依赖边界和代码放置规则见 [docs/structure.md](docs/structure.md)。测试按模块组织在 `test/` 的对应子目录，跨模块场景在 `test/integration/`；`npm test` 递归运行。新安装包在 `release/`，根目录原有安装包已归档到 `release/archive/`。
 
 运行数据默认位于 `~/.dsh/wechat-persona`：
 
@@ -95,6 +102,17 @@ stickers/
 ```
 
 原件只用内容哈希命名。名字、说明、适用场景和收藏状态在联系人目录中维护，不靠复制文件重命名来管理。单张自动归档图片上限 20 MiB；模型目录最多提供近期 40 张已确认素材、20 张共享素材和 6 张待判断图片，控制提示词大小。
+
+## 自定义人格
+
+人格就是一个文件：`~/.dsh/wechat-persona/personas/<id>/persona.json`。复制 [examples/personas/jarvis/persona.json](examples/personas/jarvis/persona.json)，把 `id` 改成目录名即可；字段说明见 [docs/persona.md](docs/persona.md)。保存后下一条消息生效，不用重启。
+
+- “人格”列出全部，“人格 <id>”切换，“菜单 → 人格”也能选
+- 网页面板可以直接读写人格卡 JSON
+- 卡片有错误不会阻塞启动，只会在面板标红并记一条警告
+- 示例里的“贾维斯”是一份管家风格的原创写作，仅作演示，与任何作品无关
+
+卡片里可写的字段只有 `id`、`name`、`description`、`prompt`、`reply`、`examples` 和 `media.sendStickers`。写错或写入已移除的字段不会生效，但会得到一条明确的警告。
 
 ## 安装与登录
 
@@ -132,5 +150,20 @@ npm run login -- --png /tmp/wechat-qr.png
 - 模型用 `present` 交付的文件可回传到微信，单文件上限 100 MiB。
 - iLink 当前不提供可靠群聊、出站原生定位、原生按钮和出站语音支持。
 - 真机排障先看 `logs/plugin-*.log`；协议探针为 `scripts/probe-login.ts`。
+
+## 参与开发
+
+```bash
+npm ci
+npm run typecheck && npm test && npm run build
+```
+
+目录职责、代码放置规则和提交约定见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [docs/structure.md](docs/structure.md)。改动消息收发路径前，请先读 [docs/design.md](docs/design.md) 里的收发不变量。
+
+## 安全
+
+这个插件能让一个聊天账号驱动本机 agent。默认 `cordis.patch.yml` 的权限档位是 `danger-full-access`，且只有白名单里的账号能驱动机器人（留空时只有扫码登录的那个号）。完整威胁模型、敏感数据位置和泄露后的处置步骤见 [SECURITY.md](SECURITY.md)。漏洞请走 GitHub Security Advisories，不要开公开 issue。
+
+## 许可与致谢
 
 更多说明见 [docs/README.md](docs/README.md)。协议实现参考腾讯 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 与 MIT 项目 [dsh-channel-wechat](https://github.com/wangx-wx/dsh-channel-wechat)，署名见 [NOTICE.md](NOTICE.md)。MIT 许可见 [LICENSE](LICENSE)。
