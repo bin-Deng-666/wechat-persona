@@ -156,6 +156,14 @@ export class LoginSession {
     this.detail = error instanceof Error ? error.message : String(error)
   }
 
+  /** 会话被服务端判为失效（errcode -14）：停在可重新扫码的状态。 */
+  markExpired(): void {
+    this.phase = 'failed'
+    this.message = '登录已失效，请重新取码扫码'
+    this.qr = undefined
+    this.state = undefined
+  }
+
   /** 退出登录后复位。 */
   reset(): void {
     this.state = undefined

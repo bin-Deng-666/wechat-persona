@@ -6,11 +6,14 @@
       config:
         # 这个通道创建的会话记录的工作目录。会话 header 的 cwd 写入后不可改，
         # 所以不设代码内默认值：静默默认会把错误目录永久写进会话。
-        cwd: !!js process.cwd()
-        # 人格卡、聊天设置、记忆、媒体缓存的根目录。相对路径按 profile 目录解析。
-        dataDir: data/wechat-persona
-        # 谁能驱动这个机器人。留空 = 只允许扫码登录的那个微信号。
-        allow: []
+        # 桌面应用从 Finder 启动时 cwd 往往是 `/`，会把会话目录记到根目录下。
+        # 默认落到用户主目录；需要别的目录在插件页改（会话创建后不可变）。
+        cwd: !!js (process.env.HOME ?? process.cwd())
+        # 人格卡、聊天设置、表情库的根目录。给绝对路径：桌面应用的 cwd 不可靠，
+        # 相对路径会相对会话工作目录解析，落到用户想不到的地方。
+        dataDir: !!js ((process.env.HOME ?? process.cwd()) + '/.dsh/wechat-persona')
+        # 谁能驱动这个机器人。**必须是字符串**（换行分隔），留空 = 只允许扫码登录的那个微信号。
+        allow: ''
         # 每个聊天默认人格（data/personas/<id>）。不存在时回落到内置 default。
         defaultPersona: default
         # 插件自己的诊断日志保留天数。

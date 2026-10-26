@@ -28,6 +28,7 @@ import type { MessageItem } from './ilink/types.ts'
 import { PeerSessions, type AgentRegistryLike } from './bridge/session.ts'
 import { Channel } from './channel/runtime.ts'
 import { TypingIndicator } from './channel/typing.ts'
+import { createFileLogger, type FileLogger } from './channel/log-file.ts'
 import { LoginSession } from './channel/login-session.ts'
 import { createPanel, PANEL_PATH, PANEL_PREFIX, type ChatSummary, type PanelStatus, type PersonaSummary } from './channel/panel.ts'
 import { renderQrSvg } from './channel/qr.ts'
@@ -82,6 +83,7 @@ class Coordinator {
   private readonly store: PersonaStore
   private readonly chatSettings: ChatSettingsStore
   private readonly stickers: StickerLibrary
+  private readonly fileLog: FileLogger
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
   private registry: AgentsLike | undefined
@@ -96,18 +98,28 @@ class Coordinator {
     this.dataDir = dataDir
     this.report = (line, detail) => {
       const logger = ctx.logger(name)
+      const text = detail === undefined ? line : `${line} ${JSON.stringify(detail)}`
       if (detail === undefined) logger.info(line)
-      else logger.warn(`${line} ${JSON.stringify(detail)}`)
+      else logger.warn(text)
+      // 同时落一份自己的文件：宿主日志会滚，出问题时用户能直接发这个文件。
+      if (detail === undefined) this.fileLog.info(text)
+      else this.fileLog.warn(text)
     }
     this.store = new PersonaStore(join(dataDir, 'personas'))
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
+    this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
       renderQr: renderQrSvg,
       onConnected: async credentials => { await this.connect(credentials) },
       report: this.report,
     })
+  }
+
+  /** 启动时打一行：证明插件被加载了、用的是哪个目录。 */
+  announceBoot(detail: string): void {
+    this.report(`已加载 ${detail}`)
   }
 
   /** 宿主 agents 服务到位后调用：恢复账号并开跑。 */
@@ -315,6 +327,12 @@ class Coordinator {
         events: this.ctx as never,
         report: this.report,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        // 服务端说 token 废了：清掉本地账号，页面回到「可以重新扫码」的状态。
+        onSessionExpired: () => {
+          this.account = undefined
+          void forgetAccount(this.dataDir)
+          this.login.markExpired()
+        },
         ...(this.mediaPreparer() === undefined ? {} : { prepareMedia: this.mediaPreparer()! }),
       })
       const cursor = await this.readCursor(account.accountId)
@@ -469,7 +487,9 @@ function boot(ctx: Context, config: ConfigShape): void {
   }
   const configured = config.dataDir.get()
   const dataDir = isAbsolute(configured) ? configured : resolve(cwd, configured)
+  // 启动时留一行，方便在宿主日志里确认「插件真的被加载了、用的是哪个目录」。
   const coordinator = new Coordinator(ctx, config, dataDir)
+  coordinator.announceBoot(`cwd=${cwd} dataDir=${dataDir}`)
 
   // 通道半边：等 agents 到位再恢复账号。用条件 inject，headless profile 也不会被 park。
   void ctx.inject(['agents'], injected => {

@@ -46,6 +46,8 @@ export interface ChannelOptions {
   events: SessionEventsLike
   /** 诊断出口。 */
   report?: (line: string, detail?: unknown) => void
+  /** 会话失效（errcode -14）时回调：宿主据此清掉登录态。 */
+  onSessionExpired?: () => void
   /** 测试注入。 */
   sleep?: (ms: number) => Promise<void>
   /** 单次长轮询的服务端 hold 时长。 */
@@ -117,6 +119,7 @@ export class Channel {
     let backoff = 1_000
 
     while (this.running) {
+      const startedAt = (this.options.now ?? Date.now)()
       try {
         const result = await this.options.api.getUpdates({
           baseUrl: this.options.account.baseUrl,
@@ -130,10 +133,16 @@ export class Channel {
         backoff = 1_000
         for (const raw of result.msgs) await this.handle(raw)
         if (result.get_updates_buf !== undefined) this.cursor = result.get_updates_buf
+
+        // 服务端本该 hold 住请求；如果它秒回且没有消息，这里补一小段睡眠，
+        // 否则就是空转——一秒钟打几十次接口，看起来像被限流，其实是自己在刷。
+        const elapsed = (this.options.now ?? Date.now)() - startedAt
+        if (result.msgs.length === 0 && elapsed < 500) await this.sleep(500 - elapsed)
       } catch (error) {
         if (!this.running) break
         if (error instanceof BusinessError && error.code === ERRCODE_SESSION_EXPIRED) {
           this.options.report?.('微信会话已失效（errcode -14），需要在插件页重新扫码')
+          this.options.onSessionExpired?.()
           // 不盲目重试：token 已经无效，重试只是刷日志。
           this.running = false
           break

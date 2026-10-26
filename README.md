@@ -42,8 +42,9 @@ wechat-persona/
 ## 数据长什么样
 
 ```text
-<dataDir>/                    默认 data/wechat-persona（相对会话 cwd）
+<dataDir>/                    默认 ~/.dsh/wechat-persona
 ├── account.json              登录凭据（0600，删掉即退出登录）
+├── logs/plugin-YYYY-MM-DD.log 插件自己的诊断日志（启动、轮询、发送失败都在这）
 ├── cursor.json               每个账号的轮询游标（重启不重放）
 ├── personas/<id>/persona.json  人格卡，见 docs/persona.md
 ├── chats/<peer>/settings.json  每聊天：人格、是否回复、长度、是否主动

@@ -23,6 +23,7 @@
 - [x] GUI：扫码页、登录态、退出登录、人格列表
 - [x] `bridge`：peer → DSH 会话 → `agent.followup()` → 回复
 - [ ] 真机验证：桌面版安装后扫码，微信收发通过
+- [x] 在真实 DSH 运行时里装载通过（headless profile 冒烟：日志出现「已加载 cwd=… dataDir=…」）
 - [x] 连通性探针：`node --experimental-strip-types scripts/probe-login.ts` 已对真实 iLink 跑通取码与状态查询
 
 **验收**：微信发「你好」，DSH 回复原样回到微信；进程重启后不重复回复历史消息。
