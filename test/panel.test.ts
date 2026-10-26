@@ -19,6 +19,11 @@ function handlers(overrides: Partial<Parameters<typeof createPanel>[0]> = {}) {
     verifyCode: async (code: string) => { calls.push(`verify:${code}`); return { phase: 'connected', message: '已连接' } satisfies LoginView },
     logout: async () => { calls.push('logout'); return idle },
     personas: async () => { calls.push('personas'); return [{ id: 'xiao-jing', name: '小鲸', description: '', warnings: [] }] },
+    chats: async () => { calls.push('chats'); return [{ peerId: 'wxid-1', enabled: true, proactive: false }] },
+    setChat: async (patch: { peerId: string; enabled?: boolean }) => {
+      calls.push(`setChat:${patch.peerId}`)
+      return { peerId: patch.peerId, enabled: patch.enabled ?? true, proactive: false }
+    },
   }
   return { handlers: { ...base, ...overrides }, calls }
 }
@@ -66,5 +71,19 @@ describe('panel routes', () => {
     assert.equal(((await (await panel.logout()).json()) as LoginView).phase, 'idle')
     assert.equal(((await (await panel.personas()).json()) as unknown[]).length, 1)
     assert.deepEqual(calls, ['begin', 'poll', 'logout', 'personas'])
+    assert.equal(((await (await panel.chats()).json()) as unknown[]).length, 1)
+    const patched = await panel.setChat(new Request('http://local/x', {
+      method: 'POST',
+      body: JSON.stringify({ peerId: 'wxid-1', enabled: false }),
+    }))
+    assert.equal(patched.status, 200)
+    assert.equal(((await patched.json()) as { enabled: boolean }).enabled, false)
+    assert.ok(calls.includes('setChat:wxid-1'))
+  })
+
+  it('chat 路由缺 peerId 时 400', async () => {
+    const { handlers: h } = handlers()
+    const response = await createPanel(h).setChat(new Request('http://local/x', { method: 'POST', body: JSON.stringify({ enabled: true }) }))
+    assert.equal(response.status, 400)
   })
 })

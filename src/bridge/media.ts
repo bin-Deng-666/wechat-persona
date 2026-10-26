@@ -1,0 +1,126 @@
+/**
+ * 把下载好的媒体变成会话消息里的内容块。
+ *
+ * 三种情况都必须退化成「文字说明」而不是「消息丢失」：
+ * - 附件服务不存在（headless 组合）
+ * - 当前模型不支持看图
+ * - 下载或解密失败
+ *
+ * 因为一条带图的消息丢了图还可以读文字，丢了整条消息就什么也没有。
+ *
+ * @module wechat-persona/bridge/media
+ */
+
+import { downloadMedia, extractMedia, sniffImageType, type InboundMedia } from '../ilink/media.ts'
+import type { MessageItem } from '../ilink/types.ts'
+
+/** 附件存储里我们用到的两个方法（结构化，避免硬依赖）。 */
+export interface AttachmentStoreLike {
+  saveImages: (inputs: readonly { data: Uint8Array; mediaType: string; name?: string }[]) => Promise<readonly unknown[]>
+  saveFile: (input: { data: Uint8Array; name?: string }) => Promise<unknown>
+}
+
+export interface PrepareMediaOptions {
+  /** 附件存储；缺失时只产出说明文字。 */
+  store?: AttachmentStoreLike | undefined
+  /** 下载器，默认走真实 CDN。 */
+  download?: (media: InboundMedia) => Promise<Uint8Array>
+  /** 当前模型是否支持图片输入。 */
+  supportsImage?: () => Promise<boolean>
+  /** 诊断出口。 */
+  report?: (line: string, detail?: unknown) => void
+}
+
+/** 一轮消息里附带的非文字内容。 */
+export interface PreparedMedia {
+  /** 可直接放进 `UserMessage.content` 的块。 */
+  parts: unknown[]
+  /** 拼进文本的说明，用于降级。 */
+  notes: string[]
+}
+
+const KIND_LABEL: Record<InboundMedia['kind'], string> = {
+  image: '图片',
+  file: '文件',
+  voice: '语音',
+  video: '视频',
+}
+
+/**
+ * 构造一个「把这条消息的媒体变成内容块」的函数。
+ * @param options - 附件存储、下载器与能力探测。
+ */
+export function createMediaPreparer(options: PrepareMediaOptions): (items: readonly MessageItem[] | undefined) => Promise<PreparedMedia> {
+  const download = options.download ?? (async (media: InboundMedia) => await downloadMedia(media))
+
+  return async items => {
+    const media = extractMedia(items)
+    const parts: unknown[] = []
+    const notes: string[] = []
+    if (media.length === 0) return { parts, notes }
+
+    const store = options.store
+    if (store === undefined) {
+      notes.push(`（收到${String(media.length)}个附件，但当前宿主没有附件服务，无法查看）`)
+      return { parts, notes }
+    }
+
+    // 能力只探一次：同一轮里模型不会中途变成另一种模态。
+    let imageSupport: boolean | undefined
+    const canSeeImages = async (): Promise<boolean> => {
+      if (imageSupport !== undefined) return imageSupport
+      if (options.supportsImage === undefined) {
+        imageSupport = false
+        return false
+      }
+      try {
+        imageSupport = await options.supportsImage()
+      } catch (error) {
+        // 探测失败不声称支持：发出去被拒会丢整条消息，只丢图片更划算。
+        options.report?.('探测图片支持失败', { error: String(error) })
+        imageSupport = false
+      }
+      return imageSupport
+    }
+
+    for (const item of media) {
+      const label = KIND_LABEL[item.kind]
+      try {
+        const bytes = await download(item)
+        if (item.kind === 'image') {
+          if (!(await canSeeImages())) {
+            notes.push('（对方发来一张图片，但当前模型不支持看图）')
+            continue
+          }
+          const mediaType = sniffImageType(bytes)
+          if (mediaType === undefined) {
+            notes.push('（对方发来一张图片，但无法识别格式）')
+            continue
+          }
+          const refs = await store.saveImages([{ data: bytes, mediaType, ...(item.name === undefined ? {} : { name: item.name }) }])
+          const ref = refs[0]
+          if (ref === undefined) {
+            notes.push('（图片保存失败）')
+            continue
+          }
+          parts.push({ type: 'image', attachment: ref })
+          continue
+        }
+
+        if (item.kind === 'file') {
+          const ref = await store.saveFile({ data: bytes, ...(item.name === undefined ? {} : { name: item.name }) })
+          parts.push({ type: 'file', attachment: ref })
+          continue
+        }
+
+        // 语音/视频暂不投递给模型，只说明收到过。
+        notes.push(`（对方发来一段${label}，暂不支持查看）`)
+      } catch (error) {
+        options.report?.(`${label}处理失败`, { error: String(error) })
+        notes.push(`（对方发来一个${label}，但没能读取）`)
+      }
+    }
+
+    return { parts, notes }
+  }
+}

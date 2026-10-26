@@ -77,7 +77,7 @@ describe('apply', () => {
     assert.equal(fake.routes.length, 0)
   })
 
-  it('有 connection 时挂上面板的七条路由', async () => {
+  it('有 connection 时挂上面板的九条路由', async () => {
     const host = fakeContext()
     const fake = fakeContext({ services: { connection: host.connection } })
     apply(fake.ctx, config)
@@ -85,6 +85,8 @@ describe('apply', () => {
     const paths = host.routes.map(route => route.path).sort()
     assert.deepEqual(paths, [
       '/api/persona-wechat/begin',
+      '/api/persona-wechat/chat',
+      '/api/persona-wechat/chats',
       '/api/persona-wechat/logout',
       '/api/persona-wechat/panel',
       '/api/persona-wechat/personas',

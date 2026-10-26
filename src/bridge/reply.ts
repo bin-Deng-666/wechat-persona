@@ -100,6 +100,8 @@ interface Queued {
   peerId: string
   text: string
   contextToken: string | undefined
+  /** 这个聊天的长度上限；undefined 用队列默认值。 */
+  maxChars?: number
 }
 
 /**
@@ -121,9 +123,9 @@ export class ReplyQueue {
    * 入队一条回复。返回的 Promise 在这条回复彻底结束（发出或放弃）后 settle，
    * 不会因重试而 reject。
    */
-  enqueue(peerId: string, text: string, contextToken?: string): Promise<void> {
+  enqueue(peerId: string, text: string, contextToken?: string, maxChars?: number): Promise<void> {
     const queue = this.queues.get(peerId) ?? []
-    queue.push({ peerId, text, contextToken })
+    queue.push({ peerId, text, contextToken, ...(maxChars === undefined ? {} : { maxChars }) })
     this.queues.set(peerId, queue)
     const existing = this.running.get(peerId)
     if (existing !== undefined) return existing
@@ -160,7 +162,7 @@ export class ReplyQueue {
     const sleep = this.options.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)) })
     const maxAttempts = this.options.maxAttempts ?? 3
     const maxThrottle = this.options.maxThrottleAttempts ?? 5
-    const chunks = splitText(item.text, this.options.maxChars ?? 2_000, this.options.splitMode ?? 'paragraph')
+    const chunks = splitText(item.text, item.maxChars ?? this.options.maxChars ?? 2_000, this.options.splitMode ?? 'paragraph')
     let throttleCount = 0
     let attempt = 0
 

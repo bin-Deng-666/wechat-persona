@@ -18,6 +18,14 @@ export const PANEL_PREFIX = '/api/persona-wechat'
 /** 页面路径。 */
 export const PANEL_PATH = `${PANEL_PREFIX}/panel`
 
+/** 一个聊天的概览，供页面编辑。 */
+export interface ChatSummary {
+  peerId: string
+  personaId?: string
+  enabled: boolean
+  proactive: boolean
+}
+
 /** 面板需要的最小接口。 */
 export interface PanelHandlers {
   /** 只读状态。 */
@@ -32,6 +40,10 @@ export interface PanelHandlers {
   logout: () => Promise<LoginView>
   /** 人格卡概览。 */
   personas: () => Promise<PersonaSummary[]>
+  /** 已知聊天的设置。 */
+  chats: () => Promise<ChatSummary[]>
+  /** 更新一个聊天的设置。 */
+  setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }) => Promise<ChatSummary>
 }
 
 export interface PanelStatus {
@@ -61,6 +73,8 @@ export interface PanelRoutes {
   verifyCode: (request: Request) => Promise<Response>
   logout: () => Promise<Response>
   personas: () => Promise<Response>
+  chats: () => Promise<Response>
+  setChat: (request: Request) => Promise<Response>
 }
 
 function json(value: unknown, status = 200): Response {
@@ -96,6 +110,23 @@ export function createPanel(handlers: PanelHandlers): PanelRoutes {
     },
     logout: async () => json(await handlers.logout()),
     personas: async () => json(await handlers.personas()),
+    chats: async () => json(await handlers.chats()),
+    setChat: async request => {
+      let body: Record<string, unknown>
+      try {
+        body = (await request.json()) as Record<string, unknown>
+      } catch {
+        return json({ error: '请求体必须是 JSON' }, 400)
+      }
+      const peerId = typeof body['peerId'] === 'string' ? body['peerId'].trim() : ''
+      if (peerId === '') return json({ error: '缺少 peerId' }, 400)
+      const patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean } = { peerId }
+      // 只接受明确给了的字段：undefined 表示「不改」，不是「清空」。
+      if (typeof body['personaId'] === 'string') patch.personaId = body['personaId'].trim()
+      if (typeof body['enabled'] === 'boolean') patch.enabled = body['enabled']
+      if (typeof body['proactive'] === 'boolean') patch.proactive = body['proactive']
+      return json(await handlers.setChat(patch))
+    },
   }
 }
 
@@ -147,6 +178,12 @@ function renderPage(): string {
   <div class="card">
     <h2 style="font-size:15px;margin:0 0 8px">人格卡</h2>
     <div id="personas" class="muted">加载中…</div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:15px;margin:0 0 4px">聊天设置</h2>
+    <p class="muted" style="margin:0 0 10px">和你说过话的微信 id 会出现在这里；改完即时生效。</p>
+    <div id="chats" class="muted">加载中…</div>
   </div>
 
 <script>
@@ -209,6 +246,33 @@ $('personas').innerHTML = list.length === 0
   ? '还没有人格卡。在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>（可参考 examples/personas/xiao-jing）。'
   : '<ul>' + list.map(p => '<li><b>' + p.name + '</b> <code>' + p.id + '</code>' + (p.description ? ' — ' + p.description : '') + '</li>').join('') + '</ul>'
 
+async function loadChats() {
+  const personas = await (await fetch(P + '/personas')).json()
+  const chats = await (await fetch(P + '/chats')).json()
+  if (chats.length === 0) { $('chats').textContent = '还没有聊天记录：先在微信里发一条消息。'; return }
+  $('chats').innerHTML = chats.map(c => {
+    const options = ['<option value="">（跟随默认）</option>'].concat(
+      personas.map(p => '<option value="' + p.id + '"' + (p.id === c.personaId ? ' selected' : '') + '>' + p.name + '</option>')
+    ).join('')
+    return '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:6px 0;border-top:1px solid rgba(127,127,127,.15)">' +
+      '<code>' + c.peerId + '</code>' +
+      '<select data-peer="' + c.peerId + '" data-field="personaId">' + options + '</select>' +
+      '<label><input type="checkbox" data-peer="' + c.peerId + '" data-field="enabled"' + (c.enabled ? ' checked' : '') + '> 回复</label>' +
+      '<label><input type="checkbox" data-peer="' + c.peerId + '" data-field="proactive"' + (c.proactive ? ' checked' : '') + '> 主动</label>' +
+      '</div>'
+  }).join('')
+  for (const el of document.querySelectorAll('#chats select, #chats input')) {
+    el.addEventListener('change', async () => {
+      const peerId = el.getAttribute('data-peer')
+      const field = el.getAttribute('data-field')
+      const value = el.type === 'checkbox' ? el.checked : el.value
+      await post('/chat', { peerId, [field]: value })
+      loadChats()
+    })
+  }
+}
+
+loadChats()
 refresh()
 </script>
 </body>

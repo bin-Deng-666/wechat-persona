@@ -10,13 +10,16 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
 import { asWeixinMessage, BusinessError, ERRCODE_SESSION_EXPIRED, type ApiClient } from '../ilink/api.ts'
-import type { WeixinMessage } from '../ilink/types.ts'
+import type { MessageItem, WeixinMessage } from '../ilink/types.ts'
 import type { AccessPolicy } from '../bridge/access.ts'
 import { composeInboundText } from '../bridge/prompt.ts'
+import type { PreparedMedia } from '../bridge/media.ts'
 import type { ReplyQueue } from '../bridge/reply.ts'
 import { extractAssistantText } from '../bridge/reply.ts'
 import { PeerSessions, sessionIdFor } from '../bridge/session.ts'
 import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
+import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../persona/settings.ts'
+import { proactiveInstruction, shouldPoke } from './proactive.ts'
 
 /** 一个已登录账号。 */
 export interface ChannelAccount {
@@ -52,6 +55,10 @@ export interface ChannelOptions {
   now?: () => number
   /** 时区，注入给 prompt。 */
   timeZone?: string
+  /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
+  settings?: ChatSettingsStore
+  /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
+  prepareMedia?: (items: readonly MessageItem[]) => Promise<PreparedMedia>
 }
 
 const DEFAULT_POLL_TIMEOUT_MS = 35_000
@@ -185,7 +192,17 @@ export class Channel {
     const sessionId = sessionIdFor(peerId)
     this.peerBySession.set(sessionId, peerId)
 
-    const card = PersonaStore.resolve(this.options.defaultPersona, this.snapshot ?? { personas: new Map(), broken: [] })
+    const settings: ChatSettings = this.options.settings === undefined
+      ? DEFAULT_CHAT_SETTINGS
+      : await this.options.settings.get(peerId)
+    if (!settings.enabled) {
+      // 明确关掉的聊天不投递：用户说了不想让它在某个对话里说话。
+      this.options.report?.('这个聊天已被关闭，消息不投递', { peerId })
+      return
+    }
+
+    const snapshot = await this.ensureSnapshot()
+    const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
     const text = composeInboundText({
       card,
       peer: peerId,
@@ -197,12 +214,108 @@ export class Channel {
 
     // 先记「已经暖过」再投递：投递失败重来时不该再灌一遍完整设定。
     this.warmed.add(peerId)
+
+    // 媒体：能附上就附，附不上就把说明拼进文字——丢图可以，丢消息不行。
+    let prepared: PreparedMedia = { parts: [], notes: [] }
+    if (this.options.prepareMedia !== undefined) {
+      try {
+        prepared = await this.options.prepareMedia(message.item_list ?? [])
+      } catch (error) {
+        this.options.report?.('媒体预处理失败', { error: String(error) })
+      }
+    }
+    const notesText = prepared.notes.length === 0 ? '' : `\n${prepared.notes.join('\n')}`
+
     const userMessage = createUserMessage({
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text: `${text}${notesText}` }, ...prepared.parts] as never,
       source: { kind: 'user' },
     })
+    this.lastActivity.set(peerId, (this.options.now ?? Date.now)())
+    if (settings.maxChars === undefined) this.chatMaxChars.delete(peerId)
+    else this.chatMaxChars.set(peerId, settings.maxChars)
     await this.options.sessions.deliver(peerId, userMessage as never)
   }
+
+  /** 人格快照：run 时加载一次；直接调 handle（测试/补投）时按需加载。 */
+  private async ensureSnapshot(): Promise<PersonaSnapshot> {
+    if (this.snapshot === undefined) this.snapshot = await this.options.personas.snapshot()
+    return this.snapshot
+  }
+
+  /** 每个 peer 最后一次说话的时间，主动搭话用。 */
+  private readonly lastActivity = new Map<string, number>()
+
+  /** 读某个 peer 的最近活跃时间（毫秒）；没说过话返回 undefined。 */
+  lastSeen(peerId: string): number | undefined {
+    return this.lastActivity.get(peerId)
+  }
+
+  /** 已知的 peer 列表（说过话的）。 */
+  knownPeers(): readonly string[] {
+    return [...this.lastActivity.keys()]
+  }
+
+  /**
+   * 让某个 peer 的模型主动说一句。
+   *
+   * 走的是正常的一轮：投一条「主动开口」的指令，回答由回复队列发出去。
+   * 这样主动消息和普通回复共用同一条投递路径，不需要第二套发送逻辑。
+   *
+   * @param peerId - 目标用户。
+   * @returns 是否真的发起了这一轮。
+   */
+  async poke(peerId: string): Promise<boolean> {
+    const now = (this.options.now ?? Date.now)()
+    const settings = this.options.settings === undefined ? DEFAULT_CHAT_SETTINGS : await this.options.settings.get(peerId)
+    const snapshot = await this.ensureSnapshot()
+    const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
+
+    const allowed = shouldPoke({
+      now,
+      lastSeenAt: this.lastActivity.get(peerId),
+      minIdleHours: card.proactive.minIdleHours,
+      quietHours: card.proactive.quietHours,
+      enabled: settings.proactive && settings.enabled && card.proactive.enabled,
+    })
+    if (!allowed) return false
+
+    const text = composeInboundText({ card, peer: peerId, text: proactiveInstruction(), first: false })
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+    // 先记时间再投递：投递失败也不该在下一分钟后重复轰炸。
+    this.lastActivity.set(peerId, now)
+    await this.options.sessions.deliver(peerId, message as never)
+    return true
+  }
+
+  /**
+   * 起一个定时器，周期性检查所有聊过的 peer。
+   * @param intervalMs - 检查间隔。
+   * @returns 停止函数。
+   */
+  startProactive(intervalMs = 10 * 60_000): () => void {
+    const timer = setInterval(() => {
+      void (async () => {
+        for (const peerId of this.knownPeers()) {
+          try {
+            await this.poke(peerId)
+          } catch (error) {
+            this.options.report?.('主动搭话失败', { peerId, error: String(error) })
+          }
+        }
+      })()
+    }, intervalMs)
+    timer.unref()
+    return () => { clearInterval(timer) }
+  }
+
+  /** 这个聊天的长度上限；读设置，读不到就用 undefined（队列默认值）。 */
+  private maxCharsFor(peerId: string): number | undefined {
+    // 同步路径上不阻塞：设置已在入站时读过并缓存进 store。
+    return this.chatMaxChars.get(peerId)
+  }
+
+  /** 入站时记下的每聊天长度上限。 */
+  private readonly chatMaxChars = new Map<string, number>()
 
   private subscribeReplies(): void {
     this.unsubscribe = this.options.events.on('session/event', (session, event) => {
@@ -210,7 +323,7 @@ export class Channel {
       if (text === undefined) return
       const peerId = this.peerBySession.get(String(session.id))
       if (peerId === undefined) return
-      void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId))
+      void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId), this.maxCharsFor(peerId))
     })
   }
 }

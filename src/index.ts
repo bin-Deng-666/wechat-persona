@@ -17,12 +17,15 @@ import { createApiClient } from './ilink/api.ts'
 import type { LoginCredentials } from './ilink/login-machine.ts'
 import { forgetAccount, loadAccount, saveAccount, type StoredAccount } from './credentials.ts'
 import { PersonaStore } from './persona/store.ts'
+import { ChatSettingsStore } from './persona/settings.ts'
 import { createAccessPolicy } from './bridge/access.ts'
 import { ReplyQueue } from './bridge/reply.ts'
+import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
+import type { MessageItem } from './ilink/types.ts'
 import { PeerSessions, type AgentRegistryLike } from './bridge/session.ts'
 import { Channel } from './channel/runtime.ts'
 import { LoginSession } from './channel/login-session.ts'
-import { createPanel, PANEL_PATH, PANEL_PREFIX, type PanelStatus, type PersonaSummary } from './channel/panel.ts'
+import { createPanel, PANEL_PATH, PANEL_PREFIX, type ChatSummary, type PanelStatus, type PersonaSummary } from './channel/panel.ts'
 import { renderQrSvg } from './channel/qr.ts'
 
 export { Config }
@@ -56,6 +59,11 @@ interface PersistenceLike {
   stat: (id: string, options?: { signal?: AbortSignal }) => Promise<unknown>
 }
 
+/** `ctx.llm` 里我们用到的部分。 */
+interface LlmLike {
+  resolveModelInfo: (provider: string, model: string) => Promise<{ inputModalities?: readonly string[] } | undefined>
+}
+
 interface ModelDefaultsLike {
   currentSelection: () => { provider: string; model: string }
 }
@@ -68,6 +76,8 @@ class Coordinator {
   private readonly config: ConfigShape
   private readonly dataDir: string
   private readonly store: PersonaStore
+  private readonly chatSettings: ChatSettingsStore
+  private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
   private registry: AgentsLike | undefined
   private account: StoredAccount | undefined
@@ -85,6 +95,7 @@ class Coordinator {
       else logger.warn(`${line} ${JSON.stringify(detail)}`)
     }
     this.store = new PersonaStore(join(dataDir, 'personas'))
+    this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
       renderQr: renderQrSvg,
@@ -141,6 +152,42 @@ class Coordinator {
     }))
   }
 
+  /** 已知聊天（设置里出现过的 + 这次运行聊过的）。 */
+  async chats(): Promise<ChatSummary[]> {
+    const peers = new Set<string>(await this.chatSettings.listPeers())
+    for (const peer of this.run?.knownPeers() ?? []) peers.add(peer)
+    const out: ChatSummary[] = []
+    for (const peerId of peers) {
+      const settings = await this.chatSettings.get(peerId)
+      out.push({
+        peerId,
+        ...(settings.personaId === undefined ? {} : { personaId: settings.personaId }),
+        enabled: settings.enabled,
+        proactive: settings.proactive,
+      })
+    }
+    return out.sort((left, right) => left.peerId.localeCompare(right.peerId))
+  }
+
+  /** 改一个聊天的设置；只改传进来的字段。 */
+  async setChat(patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }): Promise<ChatSummary> {
+    const current = await this.chatSettings.get(patch.peerId)
+    const next = {
+      ...current,
+      // 空字符串表示「跟随默认」，要真的把 personaId 去掉而不是存成空串。
+      ...(patch.personaId === undefined ? {} : patch.personaId === '' ? { personaId: undefined } : { personaId: patch.personaId }),
+      ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
+      ...(patch.proactive === undefined ? {} : { proactive: patch.proactive }),
+    }
+    const saved = await this.chatSettings.save(patch.peerId, next)
+    return {
+      peerId: patch.peerId,
+      ...(saved.personaId === undefined ? {} : { personaId: saved.personaId }),
+      enabled: saved.enabled,
+      proactive: saved.proactive,
+    }
+  }
+
   /** 面板的动作集合。 */
   panelHandlers(): {
     status: () => Promise<PanelStatus>
@@ -149,6 +196,8 @@ class Coordinator {
     verifyCode: (code: string) => Promise<ReturnType<LoginSession['view']>>
     logout: () => Promise<ReturnType<LoginSession['view']>>
     personas: () => Promise<PersonaSummary[]>
+    chats: () => Promise<ChatSummary[]>
+    setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }) => Promise<ChatSummary>
   } {
     return {
       status: async () => await this.status(),
@@ -157,6 +206,8 @@ class Coordinator {
       verifyCode: code => Promise.resolve(this.login.submitVerifyCode(code)).then(() => this.login.poll()),
       logout: async () => { await this.logout(); return this.login.view() },
       personas: async () => await this.personas(),
+      chats: async () => await this.chats(),
+      setChat: async patch => await this.setChat(patch),
     }
   }
 
@@ -205,14 +256,17 @@ class Coordinator {
         access,
         personas: this.store,
         defaultPersona: this.config.defaultPersona.get(),
+        settings: this.chatSettings,
         replies,
         events: this.ctx as never,
         report: this.report,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ...(this.mediaPreparer() === undefined ? {} : { prepareMedia: this.mediaPreparer()! }),
       })
       const cursor = await this.readCursor(account.accountId)
       this.run = channel
       this.report(`开始轮询（账号 ${account.accountId}）`)
+      this.stopProactive = channel.startProactive()
 
       // 不 await：循环跑到 stop 为止；失败要落日志而不是变成未处理的 rejection。
       void channel.run(cursor).catch((error: unknown) => { this.report('通道停止', { error: String(error) }) })
@@ -232,6 +286,8 @@ class Coordinator {
   private cursorTimer: NodeJS.Timeout | undefined
 
   private async stopRun(): Promise<void> {
+    this.stopProactive?.()
+    this.stopProactive = undefined
     if (this.cursorTimer !== undefined) {
       clearInterval(this.cursorTimer)
       this.cursorTimer = undefined
@@ -239,6 +295,29 @@ class Coordinator {
     const run = this.run
     this.run = undefined
     if (run !== undefined) await run.stop()
+  }
+
+  /**
+   * 媒体预处理器；宿主管不到附件服务时返回 undefined（通道会把附件降级成文字说明）。
+   */
+  private mediaPreparer(): ((items: readonly MessageItem[]) => Promise<PreparedMedia>) | undefined {
+    const store = this.ctx.get('attachments') as AttachmentStoreLike | undefined
+    if (store === undefined) return undefined
+    const selection = this.modelSelection()
+    return createMediaPreparer({
+      store,
+      supportsImage: async () => {
+        const llm = this.ctx.get('llm') as LlmLike | undefined
+        if (llm === undefined) return false
+        try {
+          const info = await llm.resolveModelInfo(selection.provider ?? '', selection.model ?? '')
+          return info?.inputModalities?.includes('image') ?? false
+        } catch {
+          return false
+        }
+      },
+      report: this.report,
+    })
   }
 
   private modelSelection(): { provider?: string; model?: string } {
@@ -342,6 +421,8 @@ function boot(ctx: Context, config: ConfigShape): void {
         connection.fetch.register({ path: `${PANEL_PREFIX}/verify-code`, methods: ['POST'], requestBody: 'buffered', fetch: async (request: Request) => await panel.verifyCode(request) }),
         connection.fetch.register({ path: `${PANEL_PREFIX}/logout`, methods: ['POST'], requestBody: 'buffered', fetch: async () => await panel.logout() }),
         connection.fetch.register({ path: `${PANEL_PREFIX}/personas`, methods: ['GET'], requestBody: 'buffered', fetch: async () => await panel.personas() }),
+        connection.fetch.register({ path: `${PANEL_PREFIX}/chats`, methods: ['GET'], requestBody: 'buffered', fetch: async () => await panel.chats() }),
+        connection.fetch.register({ path: `${PANEL_PREFIX}/chat`, methods: ['POST'], requestBody: 'buffered', fetch: async (request: Request) => await panel.setChat(request) }),
       ]
       return () => { for (const dispose of disposers) dispose() }
     })
