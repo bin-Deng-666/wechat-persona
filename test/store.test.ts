@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 
-import { BUILTIN_DEFAULT, PersonaStore } from '../src/persona/store.ts'
+import { BUILTIN_DEFAULT, PersonaStore, seedDefaultPersona } from '../src/persona/store.ts'
 
 const created: string[] = []
 
@@ -106,5 +106,22 @@ describe('PersonaStore', () => {
     const snapshot = await new PersonaStore(root).snapshot()
     assert.equal(snapshot.personas.size, 0)
     assert.equal(snapshot.broken.length, 1)
+  })
+})
+
+describe('seedDefaultPersona', () => {
+  it('目录为空时写一张默认人格卡', async () => {
+    const root = await makeRoot()
+    assert.equal(await seedDefaultPersona(root), true)
+    const snapshot = await new PersonaStore(root).snapshot()
+    assert.equal(snapshot.personas.get('default')?.card.name, BUILTIN_DEFAULT.name)
+  })
+
+  it('已经有卡时不覆盖', async () => {
+    const root = await makeRoot()
+    await seedDefaultPersona(root)
+    await writePersona(root, 'default', { id: 'default', name: '自定义', prompt: { identity: '你是自定义。' } })
+    assert.equal(await seedDefaultPersona(root), false)
+    assert.equal((await new PersonaStore(root).snapshot()).personas.get('default')?.card.name, '自定义')
   })
 })

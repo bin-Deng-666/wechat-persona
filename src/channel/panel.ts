@@ -15,8 +15,19 @@ import type { LoginView } from './login-session.ts'
 /** 所有路由共用的前缀，也是它们被认证的原因。 */
 export const PANEL_PREFIX = '/api/persona-wechat'
 
-/** 页面路径。 */
+/** 页面路径（宿主 fenced 的 `/api` 下；桌面版 Electron 外部浏览器拿不到 cookie）。 */
 export const PANEL_PATH = `${PANEL_PREFIX}/panel`
+
+/**
+ * 不依赖宿主 cookie 的独立入口。
+ *
+ * 桌面版的 GUI 跑在 Electron 里，普通浏览器没有它的 cookie，`/api` 一律 401。
+ * 所以再开一条自己的路由：服务端只监听 127.0.0.1，入口靠启动时生成的随机密钥保护。
+ */
+export const PUBLIC_PREFIX = '/persona-wechat'
+
+/** 独立入口的完整页面路径。 */
+export const PUBLIC_PATH = `${PUBLIC_PREFIX}/panel`
 
 /** 一个聊天的概览，供页面编辑。 */
 export interface ChatSummary {
@@ -67,6 +78,34 @@ export interface PersonaSummary {
   description: string
   /** 校验告警。 */
   warnings: string[]
+}
+
+/**
+ * 用随机密钥保护一个处理器。
+ *
+ * @param handler - 真正的处理器。
+ * @param key - 启动时生成的密钥。
+ * @returns 密钥不符时返回 401 的处理器。
+ */
+export function withKey(
+  handler: (request: Request) => Promise<Response> | Response,
+  key: string,
+): (request: Request) => Promise<Response> {
+  return async request => {
+    const provided = new URL(request.url).searchParams.get('key') ?? ''
+    if (!timingSafeEqualString(provided, key)) {
+      return new Response('缺少或错误的访问密钥', { status: 401, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+    }
+    return await handler(request)
+  }
+}
+
+/** 常数时间比较，避免按字符逐位泄露。 */
+function timingSafeEqualString(left: string, right: string): boolean {
+  if (left.length !== right.length) return false
+  let diff = 0
+  for (let index = 0; index < left.length; index += 1) diff |= left.charCodeAt(index) ^ right.charCodeAt(index)
+  return diff === 0
 }
 
 export interface PanelRoutes {
@@ -220,12 +259,14 @@ function renderPage(): string {
   </div>
 
 <script>
-const P = '${PANEL_PREFIX}'
+const P = '${PUBLIC_PREFIX}'
+const KEY = new URLSearchParams(location.search).get('key') || ''
+const q = path => P + path + (path.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(KEY)
 const $ = id => document.getElementById(id)
 let timer
 
 async function post(path, body) {
-  const res = await fetch(P + path, {
+  const res = await fetch(q(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -246,7 +287,7 @@ function render(view) {
 }
 
 async function refresh() {
-  const res = await fetch(P + '/status')
+  const res = await fetch(q('/status'))
   const status = await res.json()
   render(status.login)
   $('status').innerHTML = status.connected
@@ -276,7 +317,7 @@ $('savepersona').addEventListener('click', savePersona)
 $('cancelpersona').addEventListener('click', () => { $('editor').hidden = true })
 
 async function loadPersonas() {
-  const list = await (await fetch(P + '/personas')).json()
+  const list = await (await fetch(q('/personas'))).json()
   if (list.length === 0) {
     $('personas').innerHTML = '还没有人格卡。点下面的「新建」写一张，或在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>。'
     return
@@ -294,7 +335,7 @@ async function loadPersonas() {
 }
 
 async function openPersona(id) {
-  const result = await (await fetch(P + '/persona?id=' + encodeURIComponent(id))).json()
+  const result = await (await fetch(q('/persona?id=' + encodeURIComponent(id)))).json()
   $('editor').hidden = false
   $('personaraw').value = result.ok ? result.raw : ''
   $('personamsg').textContent = result.ok ? '正在编辑 ' + id : (result.error || '读取失败')
@@ -314,8 +355,8 @@ async function savePersona() {
 }
 
 async function loadChats() {
-  const personas = await (await fetch(P + '/personas')).json()
-  const chats = await (await fetch(P + '/chats')).json()
+  const personas = await (await fetch(q('/personas'))).json()
+  const chats = await (await fetch(q('/chats'))).json()
   if (chats.length === 0) { $('chats').textContent = '还没有聊天记录：先在微信里发一条消息。'; return }
   $('chats').innerHTML = chats.map(c => {
     const options = ['<option value="">（跟随默认）</option>'].concat(

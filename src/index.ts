@@ -7,8 +7,10 @@
  * @module wechat-persona
  */
 
+import { randomBytes } from 'node:crypto'
 import { isAbsolute, join, resolve } from 'node:path'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { watch, type FSWatcher } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 
 import { Config } from './config.ts'
@@ -17,7 +19,7 @@ import { createApiClient } from './ilink/api.ts'
 import type { LoginCredentials } from './ilink/login-machine.ts'
 import { forgetAccount, loadAccount, saveAccount, type StoredAccount } from './credentials.ts'
 import { parsePersonaCard } from './persona/card.ts'
-import { PersonaStore } from './persona/store.ts'
+import { PersonaStore, seedDefaultPersona } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
 import { StickerLibrary } from './persona/stickers.ts'
 import { sendImage } from './ilink/send-image.ts'
@@ -25,12 +27,22 @@ import { createAccessPolicy } from './bridge/access.ts'
 import { ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
 import type { MessageItem } from './ilink/types.ts'
-import { PeerSessions, type AgentRegistryLike } from './bridge/session.ts'
+import { PeerSessions, type AgentHandleLike, type AgentRegistryLike } from './bridge/session.ts'
 import { Channel } from './channel/runtime.ts'
 import { TypingIndicator } from './channel/typing.ts'
 import { createFileLogger, type FileLogger } from './channel/log-file.ts'
 import { LoginSession } from './channel/login-session.ts'
-import { createPanel, PANEL_PATH, PANEL_PREFIX, type ChatSummary, type PanelStatus, type PersonaSummary } from './channel/panel.ts'
+import {
+  createPanel,
+  PANEL_PATH,
+  PANEL_PREFIX,
+  PUBLIC_PATH,
+  PUBLIC_PREFIX,
+  withKey,
+  type ChatSummary,
+  type PanelStatus,
+  type PersonaSummary,
+} from './channel/panel.ts'
 import { renderQrSvg } from './channel/qr.ts'
 
 export { Config }
@@ -76,7 +88,7 @@ interface ModelDefaultsLike {
 /**
  * 一次通道运行。放在类里而不是模块级，是为了 profile 重载时不共享死掉的 run。
  */
-class Coordinator {
+export class Coordinator {
   private readonly ctx: Context
   private readonly config: ConfigShape
   private readonly dataDir: string
@@ -87,6 +99,7 @@ class Coordinator {
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
   private registry: AgentsLike | undefined
+  private accountWatcher: FSWatcher | undefined
   private account: StoredAccount | undefined
   private run: Channel | undefined
   private starting = false
@@ -117,6 +130,11 @@ class Coordinator {
     })
   }
 
+  /** 记下面板地址（含密钥），日志里能直接抄。 */
+  announcePanel(url: string): void {
+    this.report(`配置页：${url}`)
+  }
+
   /** 启动时打一行：证明插件被加载了、用的是哪个目录。 */
   announceBoot(detail: string): void {
     this.report(`已加载 ${detail}`)
@@ -126,7 +144,48 @@ class Coordinator {
   async attach(registry: AgentsLike): Promise<void> {
     this.registry = registry
     this.account = await loadAccount(this.dataDir)
+    this.watchAccount()
     if (this.account !== undefined) await this.startRun()
+  }
+
+  /**
+   * 监听凭据文件：终端登录（scripts/login.ts）写完后，正在运行的 DSH 不需要重启。
+   *
+   * 只认 `account.json`，且只在内容真的变了才重启通道——否则自己写游标的噪音也会触发。
+   */
+  private watchAccount(): void {
+    if (this.accountWatcher !== undefined) return
+    try {
+      this.accountWatcher = watch(this.dataDir, (_event, filename) => {
+        if (filename !== 'account.json') return
+        void this.refreshAccount().catch((error: unknown) => {
+          this.report('重新加载账号失败', { error: String(error) })
+        })
+      })
+      this.accountWatcher.unref?.()
+    } catch (error) {
+      this.report('无法监听账号文件（不影响已登录的会话）', { error: String(error) })
+    }
+  }
+
+  /**
+   * 重新读账号：出现/变化就（重）启通道，消失就停。
+   */
+  async refreshAccount(): Promise<void> {
+    const next = await loadAccount(this.dataDir)
+    if (next === undefined) {
+      if (this.account !== undefined) {
+        this.account = undefined
+        await this.stopRun()
+        this.login.markExpired()
+        this.report('账号文件已删除，通道已停止')
+      }
+      return
+    }
+    if (this.account !== undefined && this.account.botToken === next.botToken && this.account.accountId === next.accountId) return
+    this.account = next
+    this.report('检测到新登录，启动通道', { accountId: next.accountId })
+    await this.startRun()
   }
 
   /** 登录成功：落盘 + 开跑。 */
@@ -285,12 +344,15 @@ class Coordinator {
         return
       }
 
+      const preset = this.config.permission.get()
       const sessions = new PeerSessions({
         registry,
         cwd: this.config.cwd.get(),
         sessionOptions: this.modelSelection(),
         sessionExists: async id => await this.sessionExists(id),
         onError: error => { this.report('会话释放失败', { error: String(error) }) },
+        // 每个会话单独记权限：只影响这个通道造的会话，不动 profile 的全局默认。
+        onHandle: handle => { this.applyPermission(handle, preset) },
       })
       const api = createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' })
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
@@ -392,6 +454,28 @@ class Coordinator {
     })
   }
 
+  /**
+   * 给一个会话记录权限预设。
+   *
+   * 记在 session 上（append 一条 session 内的 knob 事件），所以 GUI 的会话与全局默认都不受影响。
+   * 失败只记录：它发生在会话创建路径上，抛出去会让用户等的那条消息没有下文。
+   */
+  private applyPermission(handle: AgentHandleLike, preset: string): void {
+    const permissions = this.ctx.get('permissionPresets') as { set: (session: unknown, name: string) => void } | undefined
+    if (permissions === undefined) {
+      this.report('宿主没有权限预设服务，会话沿用默认档位', { preset })
+      return
+    }
+    const session = handle.agent.session
+    if (session === undefined) return
+    try {
+      permissions.set(session, preset)
+      this.report('会话权限已设置', { preset })
+    } catch (error) {
+      this.report('设置会话权限失败，沿用默认档位', { preset, error: String(error) })
+    }
+  }
+
   /** 发一张本地表情：找到文件、读出来、走图片发送。 */
   private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined): Promise<boolean> {
     if (this.account === undefined) return false
@@ -461,6 +545,8 @@ class Coordinator {
 
   /** 卸载时停掉一切。 */
   async dispose(): Promise<void> {
+    this.accountWatcher?.close()
+    this.accountWatcher = undefined
     await this.stopRun()
   }
 }
@@ -488,6 +574,9 @@ function boot(ctx: Context, config: ConfigShape): void {
   const configured = config.dataDir.get()
   const dataDir = isAbsolute(configured) ? configured : resolve(cwd, configured)
   // 启动时留一行，方便在宿主日志里确认「插件真的被加载了、用的是哪个目录」。
+  // 首次启动把内置默认人格落盘：否则 defaultPersona 指向一张不存在的卡，
+  // 用户会看到「列表空着、但回复有人设」这种自相矛盾的状态。
+  void seedDefaultPersona(join(dataDir, 'personas'))
   const coordinator = new Coordinator(ctx, config, dataDir)
   coordinator.announceBoot(`cwd=${cwd} dataDir=${dataDir}`)
 
@@ -506,6 +595,15 @@ function boot(ctx: Context, config: ConfigShape): void {
     const connection = injected.get('connection') as ConnectionLike | undefined
     if (connection?.fetch === undefined) return
     const panel = createPanel(coordinator.panelHandlers())
+    // 独立入口的随机密钥：只在本进程生命周期内有效，重启即换。
+    const publicKey = randomBytes(12).toString('base64url')
+    const publicUrl = (ctx.get('webServer') as { port?: number } | undefined)?.port
+    coordinator.announcePanel(
+      publicUrl === undefined
+        ? `${PUBLIC_PATH}?key=${publicKey}`
+        : `http://127.0.0.1:${String(publicUrl)}${PUBLIC_PATH}?key=${publicKey}`,
+    )
+
     injected.effect(() => {
       const disposers = [
         connection.fetch.register({ path: PANEL_PATH, methods: ['GET'], requestBody: 'buffered', fetch: async () => panel.page() }),
@@ -522,6 +620,32 @@ function boot(ctx: Context, config: ConfigShape): void {
       ]
       return () => { for (const dispose of disposers) dispose() }
     })
+
+    // 不依赖宿主 cookie 的一套入口（桌面版必须的）：同一批处理器，外面套密钥校验。
+    const publicRoutes: { path: string; methods: readonly string[]; run: (request: Request) => Promise<Response> }[] = [
+      { path: `${PUBLIC_PREFIX}/panel`, methods: ['GET'], run: async () => panel.page() },
+      { path: `${PUBLIC_PREFIX}/status`, methods: ['GET'], run: async () => await panel.status() },
+      { path: `${PUBLIC_PREFIX}/begin`, methods: ['POST'], run: async () => await panel.begin() },
+      { path: `${PUBLIC_PREFIX}/poll`, methods: ['POST'], run: async () => await panel.poll() },
+      { path: `${PUBLIC_PREFIX}/verify-code`, methods: ['POST'], run: async (request: Request) => await panel.verifyCode(request) },
+      { path: `${PUBLIC_PREFIX}/logout`, methods: ['POST'], run: async () => await panel.logout() },
+      { path: `${PUBLIC_PREFIX}/personas`, methods: ['GET'], run: async () => await panel.personas() },
+      { path: `${PUBLIC_PREFIX}/chats`, methods: ['GET'], run: async () => await panel.chats() },
+      { path: `${PUBLIC_PREFIX}/chat`, methods: ['POST'], run: async (request: Request) => await panel.setChat(request) },
+      { path: `${PUBLIC_PREFIX}/persona`, methods: ['GET'], run: async (request: Request) => await panel.readPersona(request) },
+      { path: `${PUBLIC_PREFIX}/persona/save`, methods: ['POST'], run: async (request: Request) => await panel.writePersona(request) },
+    ]
+    injected.effect(() => {
+      const disposers = publicRoutes.map(route =>
+        connection.fetch.register({
+          path: route.path,
+          methods: route.methods,
+          requestBody: 'buffered',
+          fetch: withKey(route.run, publicKey),
+        }))
+      return () => { for (const dispose of disposers) dispose() }
+    })
+
     injected.logger(name).info(`配置页：${panelUrl(injected)}`)
   })
 }

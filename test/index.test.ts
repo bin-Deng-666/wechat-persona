@@ -82,7 +82,7 @@ describe('apply', () => {
     const fake = fakeContext({ services: { connection: host.connection } })
     apply(fake.ctx, config)
     await new Promise(resolve => setTimeout(resolve, 10))
-    const paths = host.routes.map(route => route.path).sort()
+    const paths = host.routes.map(route => route.path).filter(path => path.startsWith('/api/')).sort()
     assert.deepEqual(paths, [
       '/api/persona-wechat/begin',
       '/api/persona-wechat/chat',
@@ -107,6 +107,29 @@ describe('apply', () => {
       fake.logs.some(line => line.includes('http://127.0.0.1:51245/api/persona-wechat/panel')),
       `日志里应有面板地址，实际：${fake.logs.join(' | ')}`,
     )
+  })
+
+  it('同时挂一套带密钥的独立入口（桌面版靠它）', async () => {
+    const host = fakeContext()
+    const fake = fakeContext({ services: { connection: host.connection } })
+    apply(fake.ctx, config)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const publicPaths = host.routes.map(route => route.path).filter(path => path.startsWith('/persona-wechat')).sort()
+    assert.deepEqual(publicPaths, [
+      '/persona-wechat/begin',
+      '/persona-wechat/chat',
+      '/persona-wechat/chats',
+      '/persona-wechat/logout',
+      '/persona-wechat/panel',
+      '/persona-wechat/persona',
+      '/persona-wechat/persona/save',
+      '/persona-wechat/personas',
+      '/persona-wechat/poll',
+      '/persona-wechat/status',
+      '/persona-wechat/verify-code',
+    ])
+    // 日志里要能直接抄到带密钥的地址。
+    assert.ok(fake.logs.some(line => line.includes('/persona-wechat/panel?key=')), fake.logs.join(' | '))
   })
 
   it('有 agents 但没账号时不会崩（只恢复登录，不启动通道）', async () => {

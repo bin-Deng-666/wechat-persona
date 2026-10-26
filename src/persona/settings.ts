@@ -9,7 +9,7 @@
  * @module wechat-persona/persona/settings
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export interface ChatSettings {
@@ -58,7 +58,8 @@ export function parseChatSettings(raw: unknown): ChatSettings {
 /** 一个聊天的设置仓库。 */
 export class ChatSettingsStore {
   private readonly root: string
-  private readonly cache = new Map<string, ChatSettings>()
+  /** 缓存里带 mtime：文件被改过就重读，改完不必重启。 */
+  private readonly cache = new Map<string, { settings: ChatSettings; mtimeMs: number }>()
 
   /**
    * @param root - `chats/` 目录的绝对路径。
@@ -72,16 +73,25 @@ export class ChatSettingsStore {
    * @param peerId - 微信用户 id。
    */
   async get(peerId: string): Promise<ChatSettings> {
-    const cached = this.cache.get(peerId)
-    if (cached !== undefined) return cached
+    const file = this.fileOf(peerId)
+    let mtimeMs = 0
     try {
-      const raw = JSON.parse(await readFile(this.fileOf(peerId), 'utf8')) as unknown
-      const settings = parseChatSettings(raw)
-      this.cache.set(peerId, settings)
+      mtimeMs = (await stat(file)).mtimeMs
+    } catch {
+      // 没有文件 = 默认设置。
+      const settings = { ...DEFAULT_CHAT_SETTINGS }
+      this.cache.set(peerId, { settings, mtimeMs: 0 })
+      return settings
+    }
+    const cached = this.cache.get(peerId)
+    if (cached !== undefined && cached.mtimeMs === mtimeMs) return cached.settings
+    try {
+      const settings = parseChatSettings(JSON.parse(await readFile(file, 'utf8')) as unknown)
+      this.cache.set(peerId, { settings, mtimeMs })
       return settings
     } catch {
       const settings = { ...DEFAULT_CHAT_SETTINGS }
-      this.cache.set(peerId, settings)
+      this.cache.set(peerId, { settings, mtimeMs })
       return settings
     }
   }
@@ -100,7 +110,8 @@ export class ChatSettingsStore {
     // 目录名是转义过的，真实 peer id 存在文件里，listPeers 才能还原。
     await writeFile(temp, JSON.stringify({ peerId, ...normalized }, null, 2), 'utf8')
     await rename(temp, target)
-    this.cache.set(peerId, normalized)
+    // 写入后把缓存丢掉，下次 get 会按新 mtime 重新读，避免缓存与磁盘不一致。
+    this.cache.delete(peerId)
     return normalized
   }
 

@@ -24,6 +24,13 @@ export interface Config {
   defaultPersona: Volatile<string>
   /** 诊断日志保留天数。 */
   logRetentionDays: Volatile<number>
+  /**
+   * 这个通道创建的会话的权限预设。
+   *
+   * - `workspace-write`：工作区内可写，敏感操作要审批（默认）
+   * - `danger-full-access`：不再询问，什么都能干。**微信里没人能点审批，所以只有这个档位能真正干活**
+   */
+  permission: Volatile<'read-only' | 'workspace-write' | 'danger-full-access'>
 }
 
 // 不标注为 `Config`：schema 的构建器签名与 `Volatile<>` 在 exactOptionalPropertyTypes 下会打架，
@@ -38,4 +45,9 @@ export const Config = z.object({
   allow: z.string().default('').volatile(),
   defaultPersona: z.string().default('default').volatile(),
   logRetentionDays: z.number().min(0).default(7).volatile(),
+  // 默认保守：审批卡还没接上时，用户至少能看见「卡住了」而不是被静默执行。
+  permission: z
+    .union([z.const('read-only'), z.const('workspace-write'), z.const('danger-full-access')])
+    .default('workspace-write')
+    .volatile(),
 })

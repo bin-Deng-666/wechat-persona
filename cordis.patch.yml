@@ -18,3 +18,6 @@
         defaultPersona: default
         # 插件自己的诊断日志保留天数。
         logRetentionDays: 7
+        # 这个通道创建的会话的权限档位。
+        # danger-full-access = 不再询问；微信里没人能点审批卡，只有这一档能真正干活。
+        permission: danger-full-access

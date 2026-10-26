@@ -129,3 +129,28 @@ describe('PeerSessions', () => {
     assert.notEqual(first.agent.id, '')
   })
 })
+
+
+describe('会话句柄回调', () => {
+  it('新建与借用的句柄都会触发 onHandle（用于设权限）', async () => {
+    const fake = fakeRegistry()
+    const seen: string[] = []
+    const sessions = new PeerSessions({
+      registry: fake.registry,
+      cwd: '/tmp/work',
+      onHandle: handle => { seen.push(handle.agent.id) },
+    })
+    await sessions.acquire('u1')
+    await sessions.acquire('u2')
+    assert.deepEqual(seen, [sessionIdFor('u1'), sessionIdFor('u2')])
+  })
+
+  it('借用已有会话时也触发', async () => {
+    const live = new Map<string, unknown>([[sessionIdFor('u1'), { id: sessionIdFor('u1') }]])
+    const fake = fakeRegistry({ live })
+    const seen: string[] = []
+    const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work', onHandle: h => { seen.push(h.agent.id) } })
+    await sessions.acquire('u1')
+    assert.deepEqual(seen, [sessionIdFor('u1')])
+  })
+})

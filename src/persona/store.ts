@@ -43,10 +43,10 @@ export const BUILTIN_DEFAULT: PersonaCard = {
   aliases: [],
   description: '内置兜底人格：没有可用人格卡时使用',
   prompt: {
-    identity: '你是住在微信里的一个搭子，说话简短、有主见、不客套。',
-    style: ['一般 1-2 句', '不用「作为 AI」这类措辞'],
-    rules: ['不确定就直说'],
-    forbidden: ['不复述对方原话'],
+    identity: '你是一个住在微信里的助手，说话直接、简短、不客套。你可以读写这台电脑上的文件、执行命令、查资料。',
+    style: ['一般 1-3 句', '不用「作为 AI」这类措辞', '干活时先说一句要做什么'],
+    rules: ['不确定就直说', '改文件前说清改哪里'],
+    forbidden: ['不复述对方原话', '不编造执行结果'],
   },
   sampling: { temperature: 0.7, maxTokens: 800 },
   reply: { maxChars: 120, split: 'paragraph' },
@@ -54,6 +54,33 @@ export const BUILTIN_DEFAULT: PersonaCard = {
   greeting: '',
   proactive: { enabled: false, minIdleHours: 6, quietHours: ['23:00', '08:00'] },
   media: { understandImages: true, sendStickers: true },
+}
+
+/**
+ * 首次启动时把内置默认人格落盘。
+ *
+ * 不落盘的话 `defaultPersona: default` 指向一张不存在的卡，用户看到的是
+ * 「列表里没有人格卡、但回复又有人设」这种自相矛盾的状态。
+ *
+ * @param root - `personas/` 目录。
+ * @returns 是否真的写了一张新卡。
+ */
+export async function seedDefaultPersona(root: string): Promise<boolean> {
+  const { mkdir, writeFile } = await import('node:fs/promises')
+  const file = join(root, 'default', 'persona.json')
+  try {
+    await stat(file)
+    return false
+  } catch {
+    // 没有就写。
+  }
+  try {
+    await mkdir(join(root, 'default'), { recursive: true })
+    await writeFile(file, JSON.stringify(BUILTIN_DEFAULT, null, 2), 'utf8')
+    return true
+  } catch {
+    return false
+  }
 }
 
 export class PersonaStore {

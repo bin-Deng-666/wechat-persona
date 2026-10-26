@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
@@ -81,5 +81,21 @@ describe('ChatSettingsStore', () => {
     await store.save('wxid-1', { enabled: true, proactive: false })
     await store.save('a/b:c', { enabled: true, proactive: false })
     assert.deepEqual((await store.listPeers()).sort(), ['a/b:c', 'wxid-1'])
+  })
+})
+
+describe('ChatSettingsStore 热更新', () => {
+  it('文件被改过之后，下一次 get 读到新值（不用重启）', async () => {
+    const root = await makeRoot()
+    const store = new ChatSettingsStore(root)
+    await store.save('wxid-1', { enabled: true, proactive: false })
+    assert.equal((await store.get('wxid-1')).proactive, false)
+
+    // 模拟用户手改文件：内容变、mtime 变
+    const file = join(root, encodeURIComponent('wxid-1').replaceAll('%', '_'), 'settings.json')
+    await new Promise(resolve => setTimeout(resolve, 12))
+    await writeFile(file, JSON.stringify({ peerId: 'wxid-1', enabled: true, proactive: true }), 'utf8')
+
+    assert.equal((await store.get('wxid-1')).proactive, true)
   })
 })

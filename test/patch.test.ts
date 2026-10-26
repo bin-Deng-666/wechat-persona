@@ -41,10 +41,16 @@ describe('Config schema', () => {
     assert.equal(parsed['allow'], '')
     assert.equal(parsed['defaultPersona'], 'default')
     assert.equal(parsed['logRetentionDays'], 7)
+    assert.equal(parsed['permission'], 'workspace-write')
   })
 
   it('allow 给数组会被 schema 拒绝（正是 patch 里写错的那种）', () => {
     assert.throws(() => { Config({ cwd: '/tmp', allow: [] } as never) })
+  })
+
+  it('只接受三档权限，拼错会被拒绝', () => {
+    assert.equal(values({ cwd: '/tmp', permission: 'danger-full-access' })['permission'], 'danger-full-access')
+    assert.throws(() => { Config({ cwd: '/tmp', permission: 'root' } as never) })
   })
 
   it('缺 cwd 会被拒绝', () => {

@@ -254,7 +254,9 @@ export class Channel {
 
   /** 人格快照：run 时加载一次；直接调 handle（测试/补投）时按需加载。 */
   private async ensureSnapshot(): Promise<PersonaSnapshot> {
-    if (this.snapshot === undefined) this.snapshot = await this.options.personas.snapshot()
+    // 每次都扫：snapshot 内部按 mtime 判断，没变就是几次 stat，成本可以忽略。
+    // 这样「改人格卡 → 下一条消息生效」，不必重启。
+    this.snapshot = await this.options.personas.snapshot()
     return this.snapshot
   }
 

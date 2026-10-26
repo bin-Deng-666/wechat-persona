@@ -31,6 +31,11 @@ export interface AgentHandleLike {
     readonly id: SessionId
     /** 把一条消息排成下一轮并唤醒循环。 */
     followup(message: never): void
+    /**
+     * 持久化会话对象；真实 registry 会给，测试里的结构化句柄可能没有。
+     * 权限预设只能记在它上面。
+     */
+    readonly session?: unknown
   }
   /** 停循环、反注册、释放写租约。 */
   dispose(): Promise<void>
@@ -61,6 +66,13 @@ export interface PeerSessionsOptions {
   sessionExists?: (sessionId: SessionId) => Promise<boolean>
   /** 诊断出口。 */
   onError?: (error: unknown, peerId: string) => void
+  /**
+   * 会话拿到手之后（新建或恢复）调一次，用于设置权限预设。
+   *
+   * 放在这里而不是 create 的参数里：预设要记录在 session 对象上，
+   * 而 session 只有句柄返回之后才拿得到。
+   */
+  onHandle?: (handle: AgentHandleLike) => void
 }
 
 export class PeerSessions {
@@ -93,6 +105,7 @@ export class PeerSessions {
         dispose: async () => {},
       }
       this.live.set(peerId, adopted)
+      this.options.onHandle?.(adopted)
       return adopted
     }
 
@@ -112,6 +125,7 @@ export class PeerSessions {
     }
 
     this.live.set(peerId, handle)
+    this.options.onHandle?.(handle)
     return handle
   }
 

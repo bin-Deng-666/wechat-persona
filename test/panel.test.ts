@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { createPanel, PANEL_PREFIX } from '../src/channel/panel.ts'
+import { createPanel, PANEL_PREFIX, withKey } from '../src/channel/panel.ts'
 import type { LoginView } from '../src/channel/login-session.ts'
 
 const idle: LoginView = { phase: 'idle', message: '尚未开始' }
@@ -38,7 +38,8 @@ describe('panel routes', () => {
     const { handlers: h } = handlers()
     const page = await createPanel(h).page().text()
     assert.match(page, /<!doctype html>/)
-    assert.match(page, new RegExp(PANEL_PREFIX.replaceAll('/', '\\/')))
+    assert.match(page, /\/persona-wechat/)
+    assert.match(page, /const KEY = new URLSearchParams/)
     assert.match(page, /微信人格通道/)
   })
 
@@ -117,5 +118,28 @@ describe('panel routes', () => {
     const { handlers: h } = handlers()
     const response = await createPanel(h).setChat(new Request('http://local/x', { method: 'POST', body: JSON.stringify({ enabled: true }) }))
     assert.equal(response.status, 400)
+  })
+})
+
+
+describe('withKey', () => {
+  const handler = async (): Promise<Response> => new Response('ok')
+
+  it('密钥正确才放行', async () => {
+    const guarded = withKey(handler, 'secret')
+    const good = await guarded(new Request('http://local/persona-wechat/panel?key=secret'))
+    assert.equal(good.status, 200)
+
+    const missing = await guarded(new Request('http://local/persona-wechat/panel'))
+    assert.equal(missing.status, 401)
+
+    const wrong = await guarded(new Request('http://local/persona-wechat/panel?key=nope'))
+    assert.equal(wrong.status, 401)
+  })
+
+  it('长度不同的密钥也返回 401 而不是抛错', async () => {
+    const guarded = withKey(handler, 'secret')
+    assert.equal((await guarded(new Request('http://local/x?key='))).status, 401)
+    assert.equal((await guarded(new Request('http://local/x?key=secrets'))).status, 401)
   })
 })
