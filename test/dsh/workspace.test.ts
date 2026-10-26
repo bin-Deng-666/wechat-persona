@@ -33,13 +33,13 @@ function fakes(options: { failAttach?: string[] } = {}) {
 
 describe('WorkspaceGrouper', () => {
   it('没有工作区注册表时整体不可用', () => {
-    const grouper = new WorkspaceGrouper({ registry: undefined, persistence: undefined, cwd: '/work', title: '微信' })
+    const grouper = new WorkspaceGrouper({ registry: () => undefined, persistence: () => undefined, cwd: '/work', title: '微信' })
     assert.equal(grouper.available, false)
   })
 
   it('只挂本插件前缀的会话，且只建一次工作区', async () => {
     const f = fakes()
-    const grouper = new WorkspaceGrouper({ registry: f.registry, persistence: f.persistence, cwd: '/work', title: '微信' })
+    const grouper = new WorkspaceGrouper({ registry: () => f.registry, persistence: () => f.persistence, cwd: '/work', title: '微信' })
     assert.equal(await grouper.attach('session-other'), false)
     assert.equal(await grouper.attach(`${SESSION_ID_PREFIX}u1`), true)
     assert.equal(await grouper.attach(`${SESSION_ID_PREFIX}u1`), true)
@@ -49,7 +49,7 @@ describe('WorkspaceGrouper', () => {
 
   it('扫描只补齐 cwd 匹配且已持久化的本插件会话', async () => {
     const f = fakes()
-    const grouper = new WorkspaceGrouper({ registry: f.registry, persistence: f.persistence, cwd: '/work', title: '微信' })
+    const grouper = new WorkspaceGrouper({ registry: () => f.registry, persistence: () => f.persistence, cwd: '/work', title: '微信' })
     const count = await grouper.sweep()
     assert.equal(count, 2)
     assert.deepEqual(f.attached.sort(), [`${SESSION_ID_PREFIX}u1`, `${SESSION_ID_PREFIX}u1~g1`].sort())
@@ -58,12 +58,22 @@ describe('WorkspaceGrouper', () => {
   it('挂载失败会报告并允许下次重试', async () => {
     const reports: string[] = []
     const f = fakes({ failAttach: [`${SESSION_ID_PREFIX}u1`] })
-    const grouper = new WorkspaceGrouper({ registry: f.registry, persistence: f.persistence, cwd: '/work', title: '微信', report: line => { reports.push(line) } })
+    const grouper = new WorkspaceGrouper({ registry: () => f.registry, persistence: () => f.persistence, cwd: '/work', title: '微信', report: line => { reports.push(line) } })
     assert.equal(await grouper.attach(`${SESSION_ID_PREFIX}u1`), false)
     assert.ok(reports.some(line => line.includes('工作区')))
     f.created.length = 0
     // 第二次成功：失败的会话不会被记为已挂载，工作区句柄也会重建。
     assert.equal(await grouper.attach(`${SESSION_ID_PREFIX}u1~g1`), true)
     assert.equal(f.created.length, 1)
+  })
+
+  it('服务晚就绪时，注册表在调用时才被解析', async () => {
+    const f = fakes()
+    let registry: typeof f.registry | undefined
+    const grouper = new WorkspaceGrouper({ registry: () => registry, persistence: () => f.persistence, cwd: '/work', title: '微信' })
+    assert.equal(grouper.available, false)
+    assert.equal(await grouper.sweep(), 0)
+    registry = f.registry
+    assert.equal(await grouper.attach(`${SESSION_ID_PREFIX}u1`), true)
   })
 })

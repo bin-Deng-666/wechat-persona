@@ -386,13 +386,12 @@ export class Coordinator {
       const history = new ConversationStore(join(this.dataDir, 'conversations', createHash('sha256').update(account.accountId).digest('hex')))
       // 会话列表按工作区分组；本插件的会话有自己的 cwd，要主动挂一次。
       const grouper = new WorkspaceGrouper({
-        registry: this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined,
-        persistence: this.ctx.get('sessionPersistence') as SessionPersistenceLike | undefined,
+        registry: () => this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined,
+        persistence: () => this.ctx.get('sessionPersistence') as SessionPersistenceLike | undefined,
         cwd: this.config.cwd.get(),
         title: '微信',
         report: this.report,
       })
-      if (!grouper.available) this.report('宿主没有工作区注册表：微信会话会显示在「未分组」下')
       let channel: Channel
       const prompts = new PeerSystemPrompt({
         personas: this.store,
@@ -518,7 +517,16 @@ export class Coordinator {
       void channel.run(cursor).catch((error: unknown) => { this.report('通道停止', { error: String(error) }) })
 
       // 把上一轮运行留下的会话从「未分组」补齐到工作区。
-      void grouper.sweep().then(count => { if (count > 0) this.report('已有会话归入工作区', { title: '微信', count }) })
+      // 工作区服务可能比本插件晚就绪，所以立即扫一次，过几秒再补一次。
+      const sweepOnce = async (): Promise<void> => {
+        const count = await grouper.sweep()
+        if (count > 0) this.report('已有会话归入工作区', { title: '微信', count })
+        else if (!grouper.available) this.report('宿主没有工作区注册表：微信会话会显示在「未分组」下')
+      }
+      void sweepOnce()
+      const groupTimer = setTimeout(() => { void sweepOnce() }, 5_000)
+      groupTimer.unref?.()
+      this.groupTimer = groupTimer
 
       // 游标定期落盘：重启后不重放已经回过的消息。
       const timer = setInterval(() => {
@@ -534,10 +542,17 @@ export class Coordinator {
 
   private cursorTimer: NodeJS.Timeout | undefined
 
+  /** 延后补扫工作区分组的定时器。 */
+  private groupTimer: NodeJS.Timeout | undefined
+
   private async stopRun(): Promise<void> {
     if (this.cursorTimer !== undefined) {
       clearInterval(this.cursorTimer)
       this.cursorTimer = undefined
+    }
+    if (this.groupTimer !== undefined) {
+      clearTimeout(this.groupTimer)
+      this.groupTimer = undefined
     }
     this.approvals?.cancelAll()
     const run = this.run

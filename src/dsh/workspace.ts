@@ -3,7 +3,11 @@
  *
  * DSH 的会话列表按工作区分组；只有「被登记进某个工作区、且会话头部记录的 cwd
  * 等于该工作区路径」的会话才会显示在分组下，其余都归入「未分组」。本插件的会话
- * 有自己的 cwd，所以启动时补挂一次、之后每轮结束时补挂一次。
+ * 有自己的 cwd，所以要主动补挂。
+ *
+ * 两个现实约束决定了这里的写法：
+ * - 工作区服务可能比本插件晚就绪，所以注册表用「每次现取」而不是构造时抓一次；
+ * - 会话头部要等会话落盘后才读得到，所以挂载失败必须能留到下一轮重试。
  *
  * 结构化声明而非导入：精简宿主可能没有工作区注册表，缺了要能继续跑会话，
  * 而不是让插件加载失败。
@@ -32,8 +36,10 @@ export interface SessionPersistenceLike {
 }
 
 export interface WorkspaceGrouperOptions {
-  registry: WorkspaceRegistryLike | undefined
-  persistence: SessionPersistenceLike | undefined
+  /** 现取工作区注册表；宿主没有时为 undefined。 */
+  registry: () => WorkspaceRegistryLike | undefined
+  /** 现取会话持久化服务；用来枚举已有会话。 */
+  persistence: () => SessionPersistenceLike | undefined
   /** 本插件会话统一的工作目录；工作区路径必须与它一致才能挂载。 */
   cwd: string
   /** 新建工作区时用的标题；已存在的工作区标题不变。 */
@@ -57,9 +63,9 @@ export class WorkspaceGrouper {
     this.options = options
   }
 
-  /** 宿主没有工作区注册表时不做任何事（headless 等组合）。 */
+  /** 宿主是否提供了工作区注册表（headless 等组合没有）。 */
   get available(): boolean {
-    return this.options.registry !== undefined
+    return this.options.registry() !== undefined
   }
 
   /**
@@ -68,9 +74,9 @@ export class WorkspaceGrouper {
    * @returns 是否已经登记进工作区。
    */
   async attach(sessionId: string): Promise<boolean> {
-    const registry = this.options.registry
-    if (registry === undefined || this.grouped.has(sessionId)) return this.grouped.has(sessionId)
-    if (!sessionId.startsWith(SESSION_ID_PREFIX)) return false
+    if (this.grouped.has(sessionId)) return true
+    const registry = this.options.registry()
+    if (registry === undefined || !sessionId.startsWith(SESSION_ID_PREFIX)) return false
     try {
       // create 对同一规范路径幂等，所以不需要先查列表。
       this.workspace ??= registry.create(this.options.cwd, this.options.title)
@@ -92,8 +98,9 @@ export class WorkspaceGrouper {
    * @returns 本次补齐的会话数。
    */
   async sweep(): Promise<number> {
-    const persistence = this.options.persistence
-    if (persistence === undefined || this.options.registry === undefined) return 0
+    const registry = this.options.registry()
+    const persistence = this.options.persistence()
+    if (registry === undefined || persistence === undefined) return 0
     let grouped = 0
     try {
       for (const snapshot of await persistence.list()) {
