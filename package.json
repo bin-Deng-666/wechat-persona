@@ -70,7 +70,7 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
     "@deepseek-ai/dsh-user-approval": "0.2.0-rc.1",
     "@deepseek-ai/schemastery": "^3.18.4",
-    "@types/node": "^24.10.1",
+    "@types/node": "^26.6.5",
     "@types/pngjs": "^6.0.5",
     "tsdown": "^0.23.2",
     "typescript": "^5.9.3"
