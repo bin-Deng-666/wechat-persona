@@ -112,7 +112,7 @@ const DEFAULT_POLL_TIMEOUT_MS = 35_000
 const DEFAULT_MAX_BACKOFF_MS = 60_000
 const MAX_SEEN_IDS = 2_000
 /** 连发消息的合并窗口：微信用户习惯把一句话拆成几条发，逐条回会变成审问。 */
-const DEFAULT_MERGE_WINDOW_MS = 700
+const DEFAULT_MERGE_WINDOW_MS = 400
 /** 长任务第一句反馈的时机；再晚用户已经开始怀疑它死了。 */
 const DEFAULT_PROGRESS_AFTER_MS = 25_000
 
@@ -142,6 +142,8 @@ export class Channel {
   private readonly options: ChannelOptions
   private readonly sleep: (ms: number) => Promise<void>
   private cursor: string | undefined
+  /** 单次长轮询的客户端超时；跟着服务端建议值走。 */
+  private pollTimeout: number | undefined
   private running = false
   private abort: AbortController | undefined
   /** session id → peer id，用于把事件路由回微信。 */
@@ -190,6 +192,7 @@ export class Channel {
     this.subscribeReplies()
 
     const pollTimeout = this.options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS
+    this.pollTimeout = pollTimeout
     let backoff = 1_000
 
     while (this.running) {
@@ -201,17 +204,27 @@ export class Channel {
           label: 'getupdates',
           token: this.options.account.token,
           ...(this.cursor === undefined ? {} : { cursor: this.cursor }),
-          timeoutMs: pollTimeout + 5_000,
+          timeoutMs: (this.pollTimeout ?? pollTimeout) + 5_000,
           signal: this.abort.signal,
         })
         backoff = 1_000
+        const waited = (this.options.now ?? Date.now)() - startedAt
+        if (result.msgs.length > 0) {
+          // 这条日志是判断「慢在哪」的关键：长轮询等了多久才把消息交给我们。
+          this.options.report?.(`收到 ${String(result.msgs.length)} 条消息（长轮询等待 ${String(waited)}ms）`)
+        }
         for (const raw of result.msgs) await this.handle(raw)
         if (result.get_updates_buf !== undefined) this.cursor = result.get_updates_buf
 
+        // 服务端会告诉我们它愿意 hold 多久；按它给的值设客户端超时，
+        // 免得「服务端 hold 50 秒、客户端 40 秒就断」——那样每次都在同一个点上白跑。
+        if (result.longpolling_timeout_ms !== undefined && result.longpolling_timeout_ms > 0) {
+          this.pollTimeout = Math.max(5_000, result.longpolling_timeout_ms + 3_000)
+        }
+
         // 服务端本该 hold 住请求；如果它秒回且没有消息，这里补一小段睡眠，
         // 否则就是空转——一秒钟打几十次接口，看起来像被限流，其实是自己在刷。
-        const elapsed = (this.options.now ?? Date.now)() - startedAt
-        if (result.msgs.length === 0 && elapsed < 500) await this.sleep(500 - elapsed)
+        if (result.msgs.length === 0 && waited < 500) await this.sleep(500 - waited)
       } catch (error) {
         if (!this.running) break
         if (error instanceof BusinessError && error.code === ERRCODE_SESSION_EXPIRED) {
@@ -560,6 +573,7 @@ export class Channel {
       })
       this.activity.touch(peerId, (this.options.now ?? Date.now)())
       this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
+      this.options.report?.(`投递给模型（合并 ${String(pending.texts.length)} 条）`)
 
       this.peerBySession.set(sessionIdFor(peerId, pending.generation), peerId)
       this.startProgress(peerId)
@@ -947,7 +961,10 @@ export class Channel {
         return
       }
 
-      void this.options.replies.enqueue(peerId, body, token, plan)
+      const queuedAt = (this.options.now ?? Date.now)()
+      void this.options.replies.enqueue(peerId, body, token, plan).then(() => {
+        this.options.report?.(`回复已发出（模型出字到发完 ${String((this.options.now ?? Date.now)() - queuedAt)}ms）`)
+      })
     })
   }
 

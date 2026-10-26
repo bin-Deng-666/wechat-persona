@@ -160,7 +160,7 @@ describe('ReplyQueue', () => {
 describe('humanThinkingMs', () => {
   it('随长度增长但有上限', () => {
     assert.ok(humanThinkingMs('短', () => 1) < humanThinkingMs('x'.repeat(100), () => 1))
-    assert.ok(humanThinkingMs('x'.repeat(5_000), () => 1) <= 2_500)
+    assert.ok(humanThinkingMs('x'.repeat(5_000), () => 1) <= 1_200)
   })
 
   it('有抖动，不是固定值', () => {

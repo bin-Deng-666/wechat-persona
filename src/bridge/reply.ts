@@ -18,15 +18,15 @@ import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
  * 一条回复「想一下再发」的停顿。
  *
  * 秒回是机器味最重的地方：人不会在 200ms 内打出一段话。时长随长度增长，
- * 但封顶 2.5 秒——再久就变成「卡住了」，比秒回更像故障。
+ * 但封顶 1.2 秒——再久就变成「卡住了」，比秒回更像故障。
  *
  * @param text - 要发的内容。
  * @param random - 随机源，测试用。
  */
 export function humanThinkingMs(text: string, random: () => number = Math.random): number {
-  const base = 350 + Math.min(text.length, 200) * 12
+  const base = 250 + Math.min(text.length, 200) * 8
   const jitter = 0.8 + random() * 0.4
-  return Math.round(Math.min(2_500, base * jitter))
+  return Math.round(Math.min(1_200, base * jitter))
 }
 
 /** 服务端用来要求「慢一点」的返回码。 */

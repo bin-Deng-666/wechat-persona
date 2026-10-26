@@ -36,7 +36,7 @@ export const DEFAULT_REPLY_PLAN: ReplyPlan = {
   hardChars: 2_000,
   splitMode: 'paragraph',
   maxBubbles: 4,
-  gapMs: 1_200,
+  gapMs: 700,
 }
 
 /**
