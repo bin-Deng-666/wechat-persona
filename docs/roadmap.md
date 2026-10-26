@@ -20,7 +20,8 @@
 - [x] 长轮询 `getupdates` + 游标持久化 + 去重
 - [x] `sendmessage`（文本）+ 回执校验 + `ret: -2` 退避
 - [x] `sendtyping` 输入状态（ticket 缓存 + 失败静默）
-- [x] GUI：扫码页、登录态、退出登录、人格列表
+- [x] 终端扫码登录（`npm run login`）+ 凭据文件监听（登录后免重启）
+- [ ] GUI：桌面版面板不可用（宿主只转 `/api`，Electron cookie 外部拿不到）；需要改成 DSH 客户端插件
 - [x] `bridge`：peer → DSH 会话 → `agent.followup()` → 回复
 - [ ] 真机验证：桌面版安装后扫码，微信收发通过
 - [x] 在真实 DSH 运行时里装载通过（headless profile 冒烟：日志出现「已加载 cwd=… dataDir=…」）

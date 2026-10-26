@@ -53,6 +53,7 @@ export interface AgentRegistryLike {
   resume(options: {
     resumeSessionId: SessionId
     agentOptions?: { provider?: string; model?: string }
+    setup?: AgentSetupLike
   }): Promise<AgentHandleLike>
   get(sessionId: SessionId): { readonly id: SessionId } | undefined
 }

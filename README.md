@@ -57,25 +57,45 @@ wechat-persona/
 ## 安装（DSH 桌面版）
 
 `desktop` profile 由桌面应用独占管理，命令行 `dsh plugin --profile desktop add` 会被拒绝，
-所以走 GUI：
-
-1. `npm run build && npm pack`，得到 `dsh-wechat-persona-0.1.0-dev.0.tgz`
-2. GUI → **Plugins** → 安装本地包 → 选这个 tgz
-3. **完全退出并重开** DSH（bundle 层只在启动时组装）
-4. 打开 `http://127.0.0.1:<port>/api/persona-wechat/panel`，用手机微信扫码
-5. 扫码那个微信号就是你的 bot，在微信里直接发消息
-
-> 同一时间只能有一个 iLink 客户端登录同一个 bot；如果同时装了 `dsh-channel-wechat`，两个会互相踢。
-
-## 连通性自检
-
-不启动 DSH、不扫码，验证协议还能用：
+要用应用自带的 CLI：
 
 ```bash
-node --experimental-strip-types scripts/probe-login.ts
+DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+npm run build && npm pack
+"$DSH" plugin --profile desktop remove dsh-wechat-persona   # 升级时先移除
+"$DSH" plugin --profile desktop add ./dsh-wechat-persona-<version>.tgz
 ```
 
-成功会打印二维码 URL 和一次状态查询结果（`wait`）。它不写凭据，二维码几分钟后自然过期。
+装完**完全退出并重开** DSH（bundle 层只在启动时组装）。
+
+## 登录
+
+桌面版的 GUI 跑在 Electron 里，普通浏览器拿不到它的 cookie，所以**面板那条路在桌面版走不通**
+（`/api/*` 一律 401，插件路由也只能挂在 `/api` 下）。登录改走终端：
+
+```bash
+npm run login                      # 可加 --png /tmp/qr.png 把二维码写成图片
+```
+
+扫码 → 手机确认 → 凭据写入 `~/.dsh/wechat-persona/account.json`（0600）。
+**正在运行的 DSH 会在几秒内自动接上**（插件监听这个文件），不用重启。
+
+> `/persona-wechat/panel?key=…` 这套带密钥的公开入口是为 `dsh web`（真浏览器）准备的；
+> 桌面版宿主的 HTTP 层只把 `/api/*` 转给插件，所以它返回 404。**别指望它。**
+
+## 配置（桌面版目前靠文件）
+
+```text
+~/.dsh/wechat-persona/
+├── account.json                登录凭据（0600；删掉 = 退出登录）
+├── cursor.json                 每个账号的轮询游标（重启不重放）
+├── logs/plugin-YYYY-MM-DD.log  插件诊断日志，出问题先看这里
+├── personas/<id>/persona.json  人格卡（docs/persona.md）
+├── chats/<peer>/settings.json  每聊天：人格 / 是否回复 / 长度上限 / 是否主动
+└── stickers/<名字>.png|gif     表情库；回复里写 [表情:名字] 就发这张
+```
+
+改完文件**下一条消息即生效**（设置按 mtime 读、人格卡每条消息重扫），不用重启。
 
 ## 本地开发
 

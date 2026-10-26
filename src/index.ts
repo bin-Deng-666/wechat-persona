@@ -383,19 +383,33 @@ export class Coordinator {
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
       const replies = new ReplyQueue({
         send: async (peerId, text, contextToken) => {
-          await api.sendText({
+          try {
+            await api.sendText({
+              baseUrl: account.baseUrl,
+              endpoint: 'ilink/bot/sendmessage',
+              label: 'sendmessage',
+              token: account.botToken,
+              to: peerId,
+              text,
+              ...(contextToken === undefined ? {} : { contextToken }),
+            })
+          } finally {
+            // 成功要收尾，失败也要——否则手机那头会一直显示「对方正在输入」。
+            void typing.stop(peerId)
+          }
+        },
+        onGiveUp: (peerId, text, error) => {
+          this.report('回复最终失败', { peerId, chars: text.length, error: String(error) })
+          // 用户在微信那头只会看到「没回复」。给一句明确的话，比无限等待好。
+          void api.sendText({
             baseUrl: account.baseUrl,
             endpoint: 'ilink/bot/sendmessage',
-            label: 'sendmessage',
+            label: 'sendmessage(fallback)',
             token: account.botToken,
             to: peerId,
-            text,
-            ...(contextToken === undefined ? {} : { contextToken }),
-          })
-          // 发出去了才取消「正在输入」，否则手机那头会一直转。
-          void typing.stop(peerId)
+            text: '（这条没能发出去，可能是网络或限流，稍后再试一次）',
+          }).catch(() => {})
         },
-        onGiveUp: (peerId, text, error) => { this.report('回复最终失败', { peerId, chars: text.length, error: String(error) }) },
         maxChars: 2_000,
         minIntervalMs: 2_000,
       })
