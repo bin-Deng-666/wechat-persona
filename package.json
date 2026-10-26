@@ -67,7 +67,7 @@
     "@types/node": "^24.10.1",
     "@types/pngjs": "^6.0.5",
     "tsdown": "^0.23.2",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
