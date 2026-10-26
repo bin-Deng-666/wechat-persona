@@ -1,82 +1,97 @@
 /**
- * 把人格塞进一轮对话。
+ * 微信会话的系统提示词接入。
  *
- * DSH 的会话 system prompt 由宿主（web app）组装，插件没有「设置会话 system prompt」的入口，
- * 所以人格只能随消息一起带进去。做法是：
- *
- * - **每个会话的第一轮**：注入完整的人设块（身份/风格/规则/禁止/此刻/长度/示例）
- * - **之后每一轮**：只带一行提醒（名字 + 前两条风格）
- *
- * 为什么不是每轮都注入完整块：那会把每轮上下文翻倍，且模型会开始复述设定。
- * 为什么不是只注入一次：上下文压缩会丢掉最早的消息，只留一行提醒成本几乎为零。
- *
- * @module wechat-persona/bridge/prompt
+ * 每次 DSH 组装模型请求时读取当前人格、聊天设置、记忆和表情库，
+ * 作为会话作用域的 system section 参与宿主组装。用户消息不经过这里。
  */
 
-import type { PersonaCard } from '../persona/card.ts'
-import { buildSystemPrompt, type PromptContext } from '../persona/prompt.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
+import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 
-/** 完整人设块的开始标记。 */
-export const PERSONA_BEGIN = '【角色设定·仅用于本对话】'
-/** 完整人设块的结束标记。 */
-export const PERSONA_END = '【设定结束】'
+import { buildSystemPrompt } from '../persona/prompt.ts'
+import { PersonaStore } from '../persona/store.ts'
+import type { ChatSettingsStore } from '../persona/settings.ts'
+import type { PeerMemory } from './memory.ts'
+import type { StickerLibrary } from '../persona/stickers.ts'
 
-export interface ComposeInput {
-  card: PersonaCard
-  /** 对方的显示名。 */
-  peer?: string
-  /** 注入时间，测试用。 */
-  now?: Date
-  /** IANA 时区。 */
+export const PERSONA_SECTION = 'wechat-persona:persona'
+
+export interface PeerSystemPromptOptions {
+  personas: PersonaStore
+  settings: ChatSettingsStore
+  defaultPersona: () => string
+  memory: PeerMemory
+  stickers: StickerLibrary
+  now?: () => Date
   timeZone?: string
-  /** 记忆摘要。 */
-  memory?: string
-  /** 本地表情库里的名字。 */
-  stickers?: readonly string[]
-  /** 用户这一轮说的话（媒体消息是占位文本）。 */
-  text: string
-  /** 是否为本会话的第一轮。 */
-  first: boolean
+  /** 诊断出口。 */
+  report?: (line: string, detail?: unknown) => void
 }
 
-/**
- * 组装一条投递给 agent 的文本。
- *
- * @param input - 卡片、上下文与本轮原文。
- * @returns 以人设块或提醒开头的完整文本；`text` 为空时用占位符，避免空消息。
- */
-export function composeInboundText(input: ComposeInput): string {
-  const body = input.text.trim() === '' ? '（对方发来一条没有文字的消息）' : input.text
+/** 一个通道运行拥有的会话提示词注册；不修改全局提示词或其他会话。 */
+export class PeerSystemPrompt {
+  private readonly options: PeerSystemPromptOptions
+  private readonly bindings = new Map<object, () => void>()
 
-  if (input.first) {
-    const context: PromptContext = {
-      ...(input.peer === undefined ? {} : { peer: input.peer }),
-      ...(input.now === undefined ? {} : { now: input.now }),
-      ...(input.timeZone === undefined ? {} : { timeZone: input.timeZone }),
-      ...(input.memory === undefined ? {} : { memory: input.memory }),
-      ...(input.stickers === undefined ? {} : { stickers: input.stickers }),
-    }
-    const persona = buildSystemPrompt(input.card, context)
-    return `${PERSONA_BEGIN}\n${persona}\n${PERSONA_END}\n\n${body}`
+  constructor(options: PeerSystemPromptOptions) {
+    this.options = options
   }
 
-  return `${reminderOf(input.card, input.stickers)}\n\n${body}`
-}
+  /** 新建、恢复和借用会话共用同一个入口；同一个 agent 只注册一次。 */
+  install(ctx: Context, agent: object, peerId: string): void {
+    if (this.bindings.has(agent)) return
+    if (ctx.get('systemPrompt') === undefined) {
+      // 没有提示词服务就不装人设：抛错会打断会话创建，用户只看到「这条没接上」，
+      // 比「它没按人设说话」更难排查。
+      this.options.report?.('宿主没有 systemPrompt 服务，这段会话不会加载人格设定')
+      return
+    }
+    const dispose = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const assembly = await next()
+      // 子 agent 的作用域会继承父监听器，但联系人设定只属于这一段微信会话。
+      if (context.agent !== agent) return assembly
+      const text = await this.render(peerId)
+      return this.withPersona(assembly, text)
+    })
+    this.bindings.set(agent, dispose)
+  }
 
-/**
- * 一行角色提醒。
- *
- * 表情名也跟着走：库是后来才填的、或者这个会话是在库空着的时候开的，
- * 只在第一轮注入就会永远错过——那模型根本不知道有表情可发。
- *
- * @param card - 人格卡。
- * @param stickers - 本地表情库里的名字。
- */
-export function reminderOf(card: PersonaCard, stickers?: readonly string[]): string {
-  const style = card.prompt.style.slice(0, 2)
-  const tail = style.length === 0 ? '' : `：${style.join('；')}`
-  const line = `（继续扮演「${card.name}」${tail}）`
-  const names = (stickers ?? []).map(name => name.trim()).filter(name => name !== '').slice(0, 12)
-  if (names.length === 0) return line
-  return `${line}\n（有表情可用：${names.join('、')}。想发就在回复末尾写 [表情:名字]，别解释它）`
+  /** 每次请求重新解析当前状态；切人格、清记忆、改文件均在下次请求生效。 */
+  async render(peerId: string): Promise<string> {
+    const [snapshot, settings, stickerPrompt] = await Promise.all([
+      this.options.personas.snapshot(),
+      this.options.settings.get(peerId),
+      this.options.stickers.prompt(peerId),
+    ])
+    const original = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona(), snapshot)
+    const card = settings.maxChars === undefined
+      ? original
+      : { ...original, reply: { ...original.reply, maxChars: settings.maxChars } }
+    const persona = buildSystemPrompt(card, {
+      peer: peerId,
+      now: (this.options.now ?? (() => new Date()))(),
+      timeZone: this.options.timeZone,
+      memory: this.options.memory.lineFor(peerId),
+    })
+    return `${persona}\n\n# 微信通道\n` + [
+      '只响应对方发来的消息，不主动搭话。用户消息保留微信原文和附件；GIF 会提供有限的 PNG 预览帧，不能据此声称看到了完整动画。',
+      '通常一条消息即可。几个独立反应或自然停顿确实适合分开发时，用 [分条] 分隔，通常 2–3 条即可。不要把每句话都拆开，不要为了凑条数重复，也不要在正文解释控制标记。',
+      '需要跨对话保留、且对方明确提供的个人事实，可在回复末尾写 [记住: 一条简短事实]。不要记录猜测、临时任务或整段聊天。',
+      '需要提供位置时写 [位置:纬度,经度,名字]，通道会将它转成地图链接。',
+    ].join('\n') + (card.media.sendStickers ? `\n\n${stickerPrompt}` : '')
+  }
+
+  private withPersona(assembly: PromptAssembly, text: string): PromptAssembly {
+    return {
+      ...assembly,
+      sections: [...assembly.sections, { name: PERSONA_SECTION, text, interpolate: false }],
+    }
+  }
+
+  /** 通道重载/退出时只撤销自己的贡献；借用的 agent 继续由原 owner 管理。 */
+  dispose(): void {
+    for (const dispose of this.bindings.values()) dispose()
+    this.bindings.clear()
+  }
 }

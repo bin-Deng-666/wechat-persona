@@ -21,14 +21,11 @@ export interface ChatSettings {
   maxChars?: number
   /** 切分粒度；undefined 表示用卡片自己的值。 */
   split?: 'paragraph' | 'sentence' | 'none'
-  /** 是否允许主动搭话。 */
-  proactive: boolean
 }
 
-/** 默认设置：启用、跟随全局人格、跟随卡片长度、不主动。 */
+/** 默认设置：启用、跟随全局人格、跟随卡片长度。 */
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   enabled: true,
-  proactive: false,
 }
 
 const MAX_CHARS_RANGE = { min: 20, max: 4_096 } as const
@@ -47,7 +44,6 @@ export function parseChatSettings(raw: unknown): ChatSettings {
 
   if (typeof raw['personaId'] === 'string' && raw['personaId'].trim() !== '') settings.personaId = raw['personaId'].trim()
   if (typeof raw['enabled'] === 'boolean') settings.enabled = raw['enabled']
-  if (typeof raw['proactive'] === 'boolean') settings.proactive = raw['proactive']
 
   const maxChars = raw['maxChars']
   if (typeof maxChars === 'number' && Number.isFinite(maxChars)) {

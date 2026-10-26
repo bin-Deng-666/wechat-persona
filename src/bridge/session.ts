@@ -8,6 +8,7 @@
  * @module wechat-persona/bridge/session
  */
 
+import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
 /** 本通道拥有的会话 id 前缀，与其他插件的区分开。 */
@@ -30,6 +31,8 @@ export function sessionIdFor(peerId: string, generation = 0): SessionId {
 export interface AgentHandleLike {
   readonly agent: {
     readonly id: SessionId
+    /** 宿主的会话作用域，注册本会话的系统提示词与监听器。 */
+    readonly ctx?: Context
     /** 把一条消息排成下一轮并唤醒循环。 */
     followup(message: never): void
     /** 当前是否在跑一轮，GUI 的停止按钮看的也是它。 */
@@ -84,8 +87,8 @@ export interface PeerSessionsOptions {
   sessionOptions?: { provider?: string; model?: string }
   /** 探测持久化会话是否已存在；缺省视为不存在。 */
   sessionExists?: (sessionId: SessionId) => Promise<boolean>
-  /** 组合会话作用域世界（挂 preset）；缺省则不挂。 */
-  setup?: AgentSetupLike
+  /** 组合会话作用域世界（挂 preset、人设等），同时提供对应的微信联系人。 */
+  setup?: (agentCtx: unknown, agent: unknown, peerId: string) => void | Promise<void>
   /** 新建会话时写进 header 的 preset id，供以后 resume 复原同一套工具。 */
   agentPreset?: string
   /** 诊断出口。 */
@@ -96,7 +99,7 @@ export interface PeerSessionsOptions {
    * 放在这里而不是 create 的参数里：预设要记录在 session 对象上，
    * 而 session 只有句柄返回之后才拿得到。
    */
-  onHandle?: (handle: AgentHandleLike) => void
+  onHandle?: (handle: AgentHandleLike, peerId: string) => void
 }
 
 export class PeerSessions {
@@ -130,13 +133,15 @@ export class PeerSessions {
         dispose: async () => {},
       }
       this.live.set(key, adopted)
-      this.options.onHandle?.(adopted)
+      this.options.onHandle?.(adopted, peerId)
       return adopted
     }
 
     const options = this.options.sessionOptions === undefined ? {} : { agentOptions: this.options.sessionOptions }
     let handle: AgentHandleLike
-    const setup = this.options.setup === undefined ? {} : { setup: this.options.setup }
+    const setup = this.options.setup === undefined ? {} : {
+      setup: async (agentCtx: unknown, agent: unknown) => { await this.options.setup!(agentCtx, agent, peerId) },
+    }
     if ((await this.options.sessionExists?.(sessionId)) === true) {
       handle = await registry.resume({ resumeSessionId: sessionId, ...options, ...setup })
     } else {
@@ -159,7 +164,7 @@ export class PeerSessions {
     }
 
     this.live.set(key, handle)
-    this.options.onHandle?.(handle)
+    this.options.onHandle?.(handle, peerId)
     return handle
   }
 

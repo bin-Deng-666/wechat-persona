@@ -14,7 +14,6 @@ const view: MenuView = {
   model: 'deepseek-flash',
   memoryCount: 3,
   memoryFacts: ['用户叫阿彬', '做前端', '住杭州'],
-  proactive: false,
   maxChars: 120,
   split: 'paragraph',
   overridden: false,
@@ -46,17 +45,17 @@ describe('parseChoice', () => {
 })
 
 describe('renderMenu', () => {
-  it('根卡片列出六项与当前状态', () => {
+  it('根卡片展示设置且没有主动搭话开关', () => {
     const text = renderMenu('root', view)
     assert.match(text, /1 {2}人格 · 小助手/)
     assert.match(text, /3 {2}记忆 · 3 条/)
-    assert.match(text, /4 {2}主动 · 关/)
-    assert.match(text, /5 {2}分条 · 120 字 \/ 按段落/)
+    assert.doesNotMatch(text, /主动/)
+    assert.match(text, /4 {2}分条 · 120 字 \/ 按段落/)
   })
 
   it('有表情库时多一行', () => {
     const text = renderMenu('root', { ...view, stickerCount: 4 })
-    assert.match(text, /7 {2}表情库 · 4 张/)
+    assert.match(text, /6 {2}表情库 · 4 张/)
   })
 
   it('人格列表标出当前项', () => {
@@ -91,12 +90,12 @@ describe('resolveChoice', () => {
 
   it('根卡片进子面板', () => {
     assert.deepEqual(resolveChoice('root', 1), { kind: 'panel', panel: 'personas' })
-    assert.deepEqual(resolveChoice('root', 5), { kind: 'panel', panel: 'style' })
+    assert.deepEqual(resolveChoice('root', 4), { kind: 'panel', panel: 'style' })
   })
 
   it('根卡片直接执行', () => {
-    assert.deepEqual(resolveChoice('root', 4), { kind: 'action', action: 'toggle-proactive' })
-    assert.deepEqual(resolveChoice('root', 6), { kind: 'action', action: 'new-chat' })
+    assert.deepEqual(resolveChoice('root', 5), { kind: 'action', action: 'new-chat' })
+    assert.deepEqual(resolveChoice('root', 6), { kind: 'action', action: 'sticker-library' })
   })
 
   it('人格按序号选', () => {

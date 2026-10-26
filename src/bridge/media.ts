@@ -13,6 +13,7 @@
 
 import { downloadMedia, extractMedia, sniffImageType, type InboundMedia } from '../ilink/media.ts'
 import type { MessageItem } from '../ilink/types.ts'
+import { previewGif } from './gif.ts'
 
 /** 附件存储里我们用到的两个方法（结构化，避免硬依赖）。 */
 export interface AttachmentStoreLike {
@@ -35,7 +36,7 @@ export interface PrepareMediaOptions {
    * 用在「收表情」：不管当前模型能不能看图、这条消息会不会被投递，
    * 图片本身都值得留一份，用户才能说「把刚才那张收进表情库」。
    */
-  onImage?: (input: { data: Uint8Array; mediaType: string; peerId?: string }) => Promise<void> | void
+  onImage?: (input: { data: Uint8Array; mediaType: string; peerId?: string }) => Promise<string | void> | string | void
 }
 
 /** 一轮消息里附带的非文字内容。 */
@@ -72,7 +73,8 @@ export function createMediaPreparer(
     if (store === undefined) {
       // 没有附件服务也照样把图片旁路存一份：收表情不依赖模型能不能看图。
       for (const item of media) {
-        if (item.kind !== 'image' || options.onImage === undefined) continue
+        const imageFile = item.kind === 'file' && /\.(gif|png|jpe?g|webp)$/iu.test(item.name ?? '')
+        if ((!imageFile && item.kind !== 'image') || options.onImage === undefined) continue
         try {
           const bytes = await download(item)
           const mediaType = sniffImageType(bytes)
@@ -107,12 +109,13 @@ export function createMediaPreparer(
       const label = KIND_LABEL[item.kind]
       try {
         const bytes = await download(item)
-        if (item.kind === 'image') {
-          const mediaType = sniffImageType(bytes)
+        const mediaType = sniffImageType(bytes)
+        if (item.kind === 'image' || mediaType !== undefined) {
+          let imageId: string | void = undefined
           if (mediaType !== undefined && options.onImage !== undefined) {
             // 旁路失败不影响这条消息：收藏是附赠，不是主线。
             try {
-              await options.onImage({ data: bytes, mediaType, ...(peerId === undefined ? {} : { peerId }) })
+              imageId = await options.onImage({ data: bytes, mediaType, ...(peerId === undefined ? {} : { peerId }) })
             } catch (error) {
               options.report?.('图片旁路处理失败', { error: String(error) })
             }
@@ -125,13 +128,16 @@ export function createMediaPreparer(
             notes.push('（对方发来一张图片，但无法识别格式）')
             continue
           }
-          const refs = await store.saveImages([{ data: bytes, mediaType, ...(item.name === undefined ? {} : { name: item.name }) }])
-          const ref = refs[0]
-          if (ref === undefined) {
+          const name = imageId ?? item.name
+          const inputs = mediaType === 'image/gif'
+            ? previewGif(bytes).map((data, index) => ({ data, mediaType: 'image/png', name: `${name ?? 'gif'}-frame-${String(index + 1)}.png` }))
+            : [{ data: bytes, mediaType, ...(name === undefined ? {} : { name }) }]
+          const refs = await store.saveImages(inputs)
+          if (refs.length === 0) {
             notes.push('（图片保存失败）')
             continue
           }
-          parts.push({ type: 'image', attachment: ref })
+          for (const ref of refs) parts.push({ type: 'image', attachment: ref })
           continue
         }
 

@@ -52,7 +52,6 @@ export const BUILTIN_DEFAULT: PersonaCard = {
   reply: { maxChars: 120, split: 'paragraph' },
   examples: [],
   greeting: '',
-  proactive: { enabled: false, minIdleHours: 6, quietHours: ['23:00', '08:00'] },
   media: { understandImages: true, sendStickers: true },
 }
 

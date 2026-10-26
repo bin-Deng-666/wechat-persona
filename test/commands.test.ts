@@ -34,12 +34,26 @@ describe('parseCommand', () => {
   it('只有一个斜杠视为普通消息', () => {
     assert.equal(parseCommand('/'), undefined)
   })
+
+  it('中文菜单与设置不需要斜杠', () => {
+    for (const text of ['菜单', ' 设置 ', '菜单\n']) assert.deepEqual(parseCommand(text), { name: 'menu', args: [] })
+    assert.deepEqual(parseCommand('新对话'), { name: 'new', args: [] })
+    assert.deepEqual(parseCommand('人格 xiao-jing'), { name: 'persona', args: ['xiao-jing'] })
+    assert.deepEqual(parseCommand('分条 按句'), { name: 'style', args: ['sentence'] })
+    assert.deepEqual(parseCommand('表情 收 狗头'), { name: '表情', args: ['收', '狗头'] })
+  })
+
+  it('提到设置和菜单的聊天不被吞成命令', () => {
+    for (const text of ['菜单怎么设计', '菜单 怎么设计', '帮我打开菜单', '设置 一下今天的计划', '表情 很有意思', '分条 帮我解释一下']) {
+      assert.equal(parseCommand(text), undefined, text)
+    }
+  })
 })
 
 describe('文案', () => {
   it('help 列出全部命令', () => {
     const text = formatHelp()
-    for (const name of ['/help', '/new', '/status', '/persona']) assert.match(text, new RegExp(name.replace('/', '\\/')))
+    for (const name of ['帮助', '菜单', '新对话', '状态', '人格']) assert.ok(text.includes(name))
   })
 
   it('未知命令提示看 help', () => {

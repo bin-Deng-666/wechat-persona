@@ -27,7 +27,6 @@ export interface MenuView {
   memoryCount: number
   /** 记忆预览（换行分隔）；面板里最多展示几条。 */
   memoryFacts: readonly string[]
-  proactive: boolean
   maxChars: number
   split: 'paragraph' | 'sentence' | 'none'
   /** 分条设置是不是这个聊天自己设的。 */
@@ -127,9 +126,8 @@ export function renderMenu(panel: MenuPanel, view: MenuView): string {
         `1  人格 · ${view.personaName}`,
         `2  模型 · ${view.model === '' ? '未知' : view.model}`,
         `3  记忆 · ${view.memoryCount === 0 ? '空' : `${String(view.memoryCount)} 条`}`,
-        `4  主动 · ${view.proactive ? '开' : '关'}`,
-        `5  分条 · ${String(view.maxChars)} 字 / ${SPLIT_LABEL[view.split]}`,
-        `6  新对话${view.stickerCount > 0 ? `\n7  表情库 · ${String(view.stickerCount)} 张` : ''}`,
+        `4  分条 · ${String(view.maxChars)} 字 / ${SPLIT_LABEL[view.split]}`,
+        `5  新对话${view.stickerCount > 0 ? `\n6  表情库 · ${String(view.stickerCount)} 张` : ''}`,
         '',
         '0  关闭（5 分钟内回复编号）',
       ].join('\n')
@@ -153,10 +151,9 @@ export function resolveChoice(panel: MenuPanel, choice: number): MenuChoice {
         case 1: return { kind: 'panel', panel: 'personas' }
         case 2: return { kind: 'panel', panel: 'model' }
         case 3: return { kind: 'panel', panel: 'memory' }
-        case 4: return { kind: 'action', action: 'toggle-proactive' }
-        case 5: return { kind: 'panel', panel: 'style' }
-        case 6: return { kind: 'action', action: 'new-chat' }
-        case 7: return { kind: 'action', action: 'sticker-library' }
+        case 4: return { kind: 'panel', panel: 'style' }
+        case 5: return { kind: 'action', action: 'new-chat' }
+        case 6: return { kind: 'action', action: 'sticker-library' }
         default: return { kind: 'unknown' }
       }
     case 'personas':

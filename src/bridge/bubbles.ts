@@ -55,9 +55,23 @@ export function planBubbles(text: string, plan: ReplyPlan = DEFAULT_REPLY_PLAN):
   const hardChars = Math.max(1, plan.hardChars)
   const softChars = Math.min(Math.max(1, plan.softChars), hardChars)
 
-  // 不做「条数上限 + 尾部合并」：合并会让某一条悄悄超过上限，
-  // 于是「每条不超过 N 字」变成谎言。条数由长度决定，短回答自然只有一条。
-  return splitText(trimmed, softChars, plan.splitMode)
+  // [分条] 是模型主动选择的消息边界；没有标记时维持一条短回复。
+  return trimmed.split('[分条]').flatMap(part => {
+    const text = part.trim()
+    if (text === '') return []
+    // 表情标记不参与文字长度计算，避免短气泡把素材 ID 切断。
+    const stickers = text.match(/\[表情[:：][^\]]*\]/gu) ?? []
+    const body = text.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
+    const chunks = body === '' ? [] : splitText(body,
+      plan.splitMode === 'none' ? hardChars : softChars,
+      plan.splitMode === 'none' ? 'paragraph' : plan.splitMode)
+    if (stickers.length === 0) return chunks
+    // 一个气泡里可能有多张表情：全部带着，交给发送端逐张发。
+    const prefix = stickers.join(' ')
+    if (chunks.length === 0) return [prefix]
+    chunks[0] = `${prefix} ${chunks[0]}`
+    return chunks
+  })
 }
 
 /** 传输层硬上限：再长就会被服务端拒绝。 */

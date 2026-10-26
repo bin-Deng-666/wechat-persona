@@ -22,13 +22,13 @@ import { parsePersonaCard } from './persona/card.ts'
 import { PersonaStore, seedDefaultPersona } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
 import { StickerLibrary } from './persona/stickers.ts'
-import { StickerInbox } from './persona/sticker-inbox.ts'
 import { sendImage } from './ilink/send-image.ts'
 import { sendFile } from './ilink/send-file.ts'
 import { createAccessPolicy } from './bridge/access.ts'
 import { ApprovalBridge } from './bridge/approval.ts'
 import { PeerActivity } from './bridge/activity.ts'
 import { PeerMemory } from './bridge/memory.ts'
+import { PeerSystemPrompt } from './bridge/prompt.ts'
 import { humanThinkingMs, ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
 import type { MessageItem } from './ilink/types.ts'
@@ -125,17 +125,16 @@ export class Coordinator {
   private readonly store: PersonaStore
   private readonly chatSettings: ChatSettingsStore
   private readonly stickers: StickerLibrary
-  private readonly stickerInbox: StickerInbox
   private readonly generations: PeerGenerations
   private readonly activity: PeerActivity
   private readonly memory: PeerMemory
   private readonly fileLog: FileLogger
-  private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
   private registry: AgentsLike | undefined
   private accountWatcher: FSWatcher | undefined
   private account: StoredAccount | undefined
   private run: Channel | undefined
+  private prompts: PeerSystemPrompt | undefined
   private approvals: ApprovalBridge | undefined
   private starting = false
   private readonly login: LoginSession
@@ -156,9 +155,8 @@ export class Coordinator {
     this.store = new PersonaStore(join(dataDir, 'personas'))
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
-    this.stickerInbox = new StickerInbox(join(dataDir, 'stickers-inbox'))
     this.generations = new PeerGenerations(join(dataDir, 'generations.json'))
-    // 活跃时间要落盘：否则重启后「安静了多久」归零，主动搭话再也不会触发。
+    // 聊天列表和最后活跃时间在重启后保留。
     this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
     // 跨会话记忆：模型用 [记住: …] 写，下一轮注入回去。
     this.memory = new PeerMemory(join(dataDir, 'memories.json'))
@@ -345,28 +343,25 @@ export class Coordinator {
         peerId,
         ...(settings.personaId === undefined ? {} : { personaId: settings.personaId }),
         enabled: settings.enabled,
-        proactive: settings.proactive,
       })
     }
     return out.sort((left, right) => left.peerId.localeCompare(right.peerId))
   }
 
   /** 改一个聊天的设置；只改传进来的字段。 */
-  async setChat(patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }): Promise<ChatSummary> {
+  async setChat(patch: { peerId: string; personaId?: string; enabled?: boolean }): Promise<ChatSummary> {
     const current = await this.chatSettings.get(patch.peerId)
     const next = {
       ...current,
       // 空字符串表示「跟随默认」，要真的把 personaId 去掉而不是存成空串。
       ...(patch.personaId === undefined ? {} : patch.personaId === '' ? { personaId: undefined } : { personaId: patch.personaId }),
       ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
-      ...(patch.proactive === undefined ? {} : { proactive: patch.proactive }),
     }
     const saved = await this.chatSettings.save(patch.peerId, next)
     return {
       peerId: patch.peerId,
       ...(saved.personaId === undefined ? {} : { personaId: saved.personaId }),
       enabled: saved.enabled,
-      proactive: saved.proactive,
     }
   }
 
@@ -379,7 +374,7 @@ export class Coordinator {
     logout: () => Promise<ReturnType<LoginSession['view']>>
     personas: () => Promise<PersonaSummary[]>
     chats: () => Promise<ChatSummary[]>
-    setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }) => Promise<ChatSummary>
+    setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean }) => Promise<ChatSummary>
     readPersona: (id: string) => Promise<{ ok: boolean; raw?: string; error?: string }>
     writePersona: (id: string, raw: string) => Promise<{ ok: boolean; issues: string[]; warnings: string[] }>
   } {
@@ -420,6 +415,16 @@ export class Coordinator {
       } else {
         this.report('会话将挂载 preset', { agentPreset })
       }
+      const prompts = new PeerSystemPrompt({
+        personas: this.store,
+        settings: this.chatSettings,
+        defaultPersona: () => this.config.defaultPersona.get(),
+        memory: this.memory,
+        stickers: this.stickers,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        report: this.report,
+      })
+      this.prompts = prompts
       const sessions = new PeerSessions({
         registry,
         cwd: this.config.cwd.get(),
@@ -427,18 +432,23 @@ export class Coordinator {
         sessionExists: async id => await this.sessionExists(id),
         onError: error => { this.report('会话释放失败', { error: String(error) }) },
         // 每个会话单独记权限：只影响这个通道造的会话，不动 profile 的全局默认。
-        onHandle: handle => { this.applyPermission(handle, preset) },
-        ...(presets === undefined ? {} : {
-          setup: async (agentCtx: unknown, agent: unknown) => {
-            const header = (agent as { session?: { header?: { agentPreset?: string } } }).session?.header
-            await presets.mount(agentCtx, header?.agentPreset ?? agentPreset)
-          },
-        }),
+        onHandle: (handle, peerId) => {
+          // 已被 GUI 启动的会话不会执行 setup，也必须挂上当前通道的人设。
+          if (handle.agent.ctx === undefined) throw new Error('宿主 agent 缺少会话作用域')
+          prompts.install(handle.agent.ctx, handle.agent, peerId)
+          this.applyPermission(handle, preset)
+        },
+        setup: async (agentCtx, agent, peerId) => {
+          const header = (agent as { session?: { header?: { agentPreset?: string } } }).session?.header
+          await presets?.mount(agentCtx, header?.agentPreset ?? agentPreset)
+          prompts.install(agentCtx as Context, agent as object, peerId)
+        },
         ...(agentPreset === undefined ? {} : { agentPreset }),
       })
       const api = createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' })
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
       const replies = new ReplyQueue({
+        sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         send: async (peerId, text, contextToken) => {
           await api.sendText({
             baseUrl: account.baseUrl,
@@ -490,24 +500,19 @@ export class Coordinator {
         sendFiles: async (peerId, paths, contextToken) => {
           for (const path of paths) await this.sendFile(peerId, path, contextToken)
         },
-        stickerNames: async () => await this.stickers.names(),
-        stickerInbox: {
-          latest: async peerId => await this.stickerInbox.latest(peerId),
-          adopt: async (peerId, name) => await this.stickerInbox.adopt(peerId, name, this.stickers),
-        },
+        stickers: this.stickers,
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
         replies,
         events: this.ctx as never,
         report: this.report,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         // 服务端说 token 废了：清掉本地账号，页面回到「可以重新扫码」的状态。
         onSessionExpired: () => {
           this.account = undefined
           void forgetAccount(this.dataDir)
           this.login.markExpired()
         },
-        ...(this.mediaPreparer() === undefined ? {} : { prepareMedia: this.mediaPreparer()! }),
+        prepareMedia: this.mediaPreparer(),
       })
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。
@@ -522,7 +527,6 @@ export class Coordinator {
       const cursor = await this.readCursor(account.accountId)
       this.run = channel
       this.report(`开始轮询（账号 ${account.accountId}）`)
-      this.stopProactive = channel.startProactive()
 
       // 不 await：循环跑到 stop 为止；失败要落日志而不是变成未处理的 rejection。
       void channel.run(cursor).catch((error: unknown) => { this.report('通道停止', { error: String(error) }) })
@@ -542,23 +546,21 @@ export class Coordinator {
   private cursorTimer: NodeJS.Timeout | undefined
 
   private async stopRun(): Promise<void> {
-    this.stopProactive?.()
-    this.stopProactive = undefined
     if (this.cursorTimer !== undefined) {
       clearInterval(this.cursorTimer)
       this.cursorTimer = undefined
     }
+    this.approvals?.cancelAll()
     const run = this.run
     this.run = undefined
     if (run !== undefined) await run.stop()
+    this.prompts?.dispose()
+    this.prompts = undefined
   }
 
-  /**
-   * 媒体预处理器；宿主管不到附件服务时返回 undefined（通道会把附件降级成文字说明）。
-   */
-  private mediaPreparer(): ((items: readonly MessageItem[]) => Promise<PreparedMedia>) | undefined {
+  /** 媒体处理不依赖视觉能力：原件总是先保存，视觉输入按宿主/模型能力决定。 */
+  private mediaPreparer(): (items: readonly MessageItem[], peerId?: string) => Promise<PreparedMedia> {
     const store = this.ctx.get('attachments') as AttachmentStoreLike | undefined
-    if (store === undefined) return undefined
     const selection = this.modelSelection()
     return createMediaPreparer({
       store,
@@ -573,9 +575,10 @@ export class Coordinator {
         }
       },
       report: this.report,
-      // 收到图片就留一份：用户之后才能说「把刚才那张收进表情库」。
+      // 收到图片便保留原件；只有模型确认是表情或用户显式收藏后才可回发。
       onImage: async ({ data, mediaType, peerId }) => {
-        if (peerId !== undefined) await this.stickerInbox.put(peerId, data, mediaType)
+        if (peerId === undefined) return
+        return (await this.stickers.capture(peerId, data, mediaType))?.id
       },
     })
   }
@@ -629,7 +632,7 @@ export class Coordinator {
   /** 发一张本地表情：找到文件、读出来、走图片发送。 */
   private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined): Promise<boolean> {
     if (this.account === undefined) return false
-    const file = await this.stickers.find(stickerName)
+    const file = await this.stickers.find(stickerName, peerId)
     if (file === undefined) {
       this.report('表情库里没有这张，按文字发', { name: stickerName })
       return false
@@ -737,12 +740,11 @@ function boot(ctx: Context, config: ConfigShape): void {
   void seedDefaultPersona(join(dataDir, 'personas'))
   // 表情目录先建好：没有目录时用户不知道该把图放哪，`/表情` 也只能说「空的」。
   void mkdir(join(dataDir, 'stickers'), { recursive: true }).catch(() => {})
-  void mkdir(join(dataDir, 'stickers-inbox'), { recursive: true }).catch(() => {})
+  void mkdir(join(dataDir, 'stickers', 'shared'), { recursive: true }).catch(() => {})
   const coordinator = new Coordinator(ctx, config, dataDir)
   coordinator.announceBoot(`cwd=${cwd} dataDir=${dataDir}`)
 
-  // 通道半边：等 agents 到位再恢复账号。用条件 inject，headless profile 也不会被 park。
-  void ctx.inject(['agents'], injected => {
+  void ctx.inject(['agents', 'systemPrompt'], injected => {
     const registry = injected.get('agents') as AgentsLike | undefined
     if (registry === undefined) return
     void coordinator.attach(registry).catch((error: unknown) => {

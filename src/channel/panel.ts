@@ -34,7 +34,6 @@ export interface ChatSummary {
   peerId: string
   personaId?: string
   enabled: boolean
-  proactive: boolean
 }
 
 /** 面板需要的最小接口。 */
@@ -58,7 +57,7 @@ export interface PanelHandlers {
   /** 已知聊天的设置。 */
   chats: () => Promise<ChatSummary[]>
   /** 更新一个聊天的设置。 */
-  setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }) => Promise<ChatSummary>
+  setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean }) => Promise<ChatSummary>
 }
 
 export interface PanelStatus {
@@ -165,11 +164,10 @@ export function createPanel(handlers: PanelHandlers): PanelRoutes {
       }
       const peerId = typeof body['peerId'] === 'string' ? body['peerId'].trim() : ''
       if (peerId === '') return json({ error: '缺少 peerId' }, 400)
-      const patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean } = { peerId }
+      const patch: { peerId: string; personaId?: string; enabled?: boolean } = { peerId }
       // 只接受明确给了的字段：undefined 表示「不改」，不是「清空」。
       if (typeof body['personaId'] === 'string') patch.personaId = body['personaId'].trim()
       if (typeof body['enabled'] === 'boolean') patch.enabled = body['enabled']
-      if (typeof body['proactive'] === 'boolean') patch.proactive = body['proactive']
       return json(await handlers.setChat(patch))
     },
     readPersona: async request => {
@@ -366,7 +364,6 @@ async function loadChats() {
       '<code>' + c.peerId + '</code>' +
       '<select data-peer="' + c.peerId + '" data-field="personaId">' + options + '</select>' +
       '<label><input type="checkbox" data-peer="' + c.peerId + '" data-field="enabled"' + (c.enabled ? ' checked' : '') + '> 回复</label>' +
-      '<label><input type="checkbox" data-peer="' + c.peerId + '" data-field="proactive"' + (c.proactive ? ' checked' : '') + '> 主动</label>' +
       '</div>'
   }).join('')
   for (const el of document.querySelectorAll('#chats select, #chats input')) {

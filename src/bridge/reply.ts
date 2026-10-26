@@ -13,6 +13,7 @@
  */
 
 import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
+import { parseStickerTokens } from '../persona/stickers.ts'
 
 /**
  * 一条回复「想一下再发」的停顿。
@@ -91,6 +92,8 @@ export type ReplySender = (peerId: string, text: string, contextToken: string | 
 
 export interface ReplyQueueOptions {
   send: ReplySender
+  /** 表情与文字共用顺序、节流、重试和队列生命周期。 */
+  sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   /** 普通失败最多尝试几次，默认 3。 */
   maxAttempts?: number
   /** 限流额外允许几次，默认 5。 */
@@ -216,12 +219,8 @@ export class ReplyQueue {
 
   private async deliver(item: Queued): Promise<void> {
     const sleep = this.options.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)) })
-    const maxAttempts = this.options.maxAttempts ?? 3
-    const maxThrottle = this.options.maxThrottleAttempts ?? 5
     const plan = item.plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
     const bubbles = planBubbles(item.text, plan)
-    let throttleCount = 0
-    let attempt = 0
 
     // 命令回复、菜单卡片、失败提示都不该「想一想」：秒回才像在点按钮。
     const thinking = item.immediate === true ? 0 : (this.options.thinkingMs?.(item.peerId, item.text) ?? 0)
@@ -230,31 +229,47 @@ export class ReplyQueue {
       // 第二条起先等一个「人打字」的间隔：几条同时出现像刷屏，完全不留白又像卡了。
       if (index > 0) await sleep(plan.gapMs)
       this.options.onChunk?.(item.peerId, index, bubbles.length)
-      for (;;) {
-        await this.pace(item.peerId, sleep)
-        try {
-          const sendStarted = (this.options.now ?? Date.now)()
-          await this.options.send(item.peerId, chunk, item.contextToken)
-          const spent = (this.options.now ?? Date.now)() - sendStarted
-          // 只记慢的：正常 300ms 的发送不值得刷日志，超过 1 秒就要看得见。
-          if (spent > 1_000) this.options.onSlowSend?.(item.peerId, spent, chunk.length)
-          this.lastSentAt.set(item.peerId, (this.options.now ?? Date.now)())
-          break
-        } catch (error) {
-          if (isThrottled(error) && throttleCount < maxThrottle) {
-            // 限流是「慢一点」，不是「别发」：按指数退避重试同一条。
-            throttleCount += 1
-            const wait = Math.min(THROTTLE_MAX_MS, THROTTLE_BASE_MS * 2 ** (throttleCount - 1))
-            await sleep(wait)
-            continue
-          }
-          attempt += 1
-          if (attempt >= maxAttempts) {
-            this.options.onGiveUp?.(item.peerId, chunk, error)
-            return
-          }
-          await sleep(this.options.retryDelayMs ?? 1_000)
+      const { names, text: stripped } = parseStickerTokens(chunk)
+      // 一张失败不影响下一张，也不影响正文：表情是锦上添花。
+      for (const name of names) {
+        if (this.options.sendSticker === undefined) break
+        await this.trySend(item, chunk, async () => await this.options.sendSticker!(item.peerId, name, item.contextToken), sleep)
+      }
+      const body = names.length === 0 ? chunk : stripped
+      if (body === '') continue
+      const sent = await this.trySend(item, body, async () => {
+        await this.options.send(item.peerId, body, item.contextToken)
+        return true
+      }, sleep)
+      if (!sent) return
+    }
+  }
+
+  private async trySend(item: Queued, text: string, send: () => Promise<boolean>, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+    let throttleCount = 0
+    let attempt = 0
+    for (;;) {
+      await this.pace(item.peerId, sleep)
+      try {
+        const sendStarted = (this.options.now ?? Date.now)()
+        const sent = await send()
+        if (!sent) return false
+        const spent = (this.options.now ?? Date.now)() - sendStarted
+        if (spent > 1_000) this.options.onSlowSend?.(item.peerId, spent, text.length)
+        this.lastSentAt.set(item.peerId, (this.options.now ?? Date.now)())
+        return true
+      } catch (error) {
+        if (isThrottled(error) && throttleCount < (this.options.maxThrottleAttempts ?? 5)) {
+          throttleCount += 1
+          await sleep(Math.min(THROTTLE_MAX_MS, THROTTLE_BASE_MS * 2 ** (throttleCount - 1)))
+          continue
         }
+        attempt += 1
+        if (attempt >= (this.options.maxAttempts ?? 3)) {
+          this.options.onGiveUp?.(item.peerId, text, error)
+          return false
+        }
+        await sleep(this.options.retryDelayMs ?? 1_000)
       }
     }
   }

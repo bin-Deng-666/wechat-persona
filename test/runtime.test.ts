@@ -89,21 +89,17 @@ describe('Channel.handle', () => {
     return { channel, delivered, sent, emit }
   }
 
-  it('第一轮注入完整人设块', async () => {
+  it('第一轮只投递微信原文', async () => {
     const { channel, delivered } = setup()
     await channel.handle(userMessage())
-    assert.equal(delivered.length, 1)
-    assert.match(delivered[0]?.text ?? '', /【角色设定/)
-    assert.ok((delivered[0]?.text ?? '').endsWith('在吗'))
+    assert.deepEqual(delivered, [{ peerId: 'wxid-owner', text: '在吗' }])
   })
 
-  it('第二轮只带一行提醒', async () => {
+  it('后续轮次也不混入人设提醒', async () => {
     const { channel, delivered } = setup()
     await channel.handle(userMessage({ message_id: 'm1' }))
     await channel.handle(userMessage({ message_id: 'm2' }))
-    assert.equal(delivered.length, 2)
-    assert.doesNotMatch(delivered[1]?.text ?? '', /【角色设定/)
-    assert.match(delivered[1]?.text ?? '', /继续扮演/)
+    assert.deepEqual(delivered.map(item => item.text), ['在吗', '在吗'])
   })
 
   it('重复的 message_id 只投递一次', async () => {
@@ -246,7 +242,7 @@ describe('Channel 与 per-chat 设置', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      settings: { get: async () => ({ enabled: false, proactive: false }) } as never,
+      settings: { get: async () => ({ enabled: false }) } as never,
     })
     await channel.handle(userMessage())
     assert.equal(delivered.length, 0)
@@ -275,10 +271,10 @@ describe('Channel 与 per-chat 设置', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      settings: { get: async () => ({ enabled: true, proactive: false, personaId: 'xiao-jing' }) } as never,
+      settings: { get: async () => ({ enabled: true, personaId: 'xiao-jing' }) } as never,
     })
     await channel.handle(userMessage())
-    assert.match(delivered[0]?.text ?? '', /小鲸/)
+    assert.equal(delivered[0]?.text, '在吗')
   })
 
   it('聊天的 maxChars 会限制单条长度', async () => {
@@ -297,7 +293,7 @@ describe('Channel 与 per-chat 设置', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      settings: { get: async () => ({ enabled: true, proactive: false, maxChars: 30 }) } as never,
+      settings: { get: async () => ({ enabled: true, maxChars: 30 }) } as never,
     })
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', {
@@ -308,89 +304,6 @@ describe('Channel 与 per-chat 设置', () => {
     assert.ok(sent.length > 1, `应被拆成多条，实际 ${String(sent.length)} 条`)
     for (const text of sent) assert.ok(text.length <= 30, `单条超限：${String(text.length)}`)
     assert.equal(delivered.length, 1)
-  })
-})
-
-
-describe('主动搭话', () => {
-  async function personaRoot(proactiveEnabled: boolean): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), 'proactive-personas-'))
-    await mkdir(join(root, 'chatty'), { recursive: true })
-    await writeFile(join(root, 'chatty', 'persona.json'), JSON.stringify({
-      id: 'chatty',
-      name: '话痨',
-      prompt: { identity: '你是{{name}}，爱主动开口。' },
-      proactive: { enabled: proactiveEnabled, minIdleHours: 1, quietHours: ['23:00', '08:00'] },
-    }), 'utf8')
-    return root
-  }
-
-  function makeChannel(options: { personas: PersonaStore; settings: unknown; now: number }) {
-    const { sessions, delivered } = fakeSessions()
-    const { events } = fakeEvents()
-    const channel = new Channel({
-      api: {} as ApiClient,
-      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
-      sessions,
-      access: createAccessPolicy({ owner: 'wxid-owner' }),
-      personas: options.personas,
-      defaultPersona: 'chatty',
-      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {} }),
-      events,
-      report: () => {},
-      sleep: async () => {},
-      mergeWindowMs: 0,
-      now: () => options.now,
-      settings: options.settings as never,
-    })
-    return { channel, delivered }
-  }
-
-  it('空闲够久且允许时，主动发起一轮', async () => {
-    const now = Date.parse('2026-10-26T14:00:00+08:00')
-    const root = await personaRoot(true)
-    const { channel } = makeChannel({
-      personas: new PersonaStore(root),
-      settings: { get: async () => ({ enabled: true, proactive: true }) },
-      now,
-    })
-    // 先让它有一次活动记录（2 小时前）。
-    ;channel.markActive('wxid-owner', now - 2 * 60 * 60 * 1_000)
-    const poked = await channel.poke('wxid-owner')
-    assert.equal(poked, true)
-  })
-
-  it('刚说完话不主动', async () => {
-    const now = Date.parse('2026-10-26T14:00:00+08:00')
-    const { channel } = makeChannel({
-      personas: new PersonaStore(await personaRoot(true)),
-      settings: { get: async () => ({ enabled: true, proactive: true }) },
-      now,
-    })
-    ;channel.markActive('wxid-owner', now - 60_000)
-    assert.equal(await channel.poke('wxid-owner'), false)
-  })
-
-  it('聊天没开主动时不主动', async () => {
-    const now = Date.parse('2026-10-26T14:00:00+08:00')
-    const { channel } = makeChannel({
-      personas: new PersonaStore(await personaRoot(true)),
-      settings: { get: async () => ({ enabled: true, proactive: false }) },
-      now,
-    })
-    ;channel.markActive('wxid-owner', now - 5 * 60 * 60 * 1_000)
-    assert.equal(await channel.poke('wxid-owner'), false)
-  })
-
-  it('人格卡没开主动时不主动', async () => {
-    const now = Date.parse('2026-10-26T14:00:00+08:00')
-    const { channel } = makeChannel({
-      personas: new PersonaStore(await personaRoot(false)),
-      settings: { get: async () => ({ enabled: true, proactive: true }) },
-      now,
-    })
-    ;channel.markActive('wxid-owner', now - 5 * 60 * 60 * 1_000)
-    assert.equal(await channel.poke('wxid-owner'), false)
   })
 })
 
@@ -407,7 +320,7 @@ describe('回复里的表情标记', () => {
       access: createAccessPolicy({ owner: 'wxid-owner' }),
       personas: new PersonaStore('/nonexistent'),
       defaultPersona: 'default',
-      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sendSticker, sleep: async () => {} }),
       events,
       report: () => {},
       sleep: async () => {},
@@ -533,8 +446,7 @@ describe('内置命令', () => {
     await channel.handle(userMessage({ message_id: 'c2', item_list: [{ type: 1, text_item: { text: '你好' } }] }))
     assert.equal(delivered.length, 1)
     assert.equal(delivered[0]?.generation, 1)
-    // 新会话必须重新拿到完整人设，而不是只收到一行提醒
-    assert.match(delivered[0]?.text ?? '', /【角色设定/)
+    assert.equal(delivered[0]?.text, '你好')
   })
 
   it('/status 报人格与段数', async () => {
@@ -731,7 +643,7 @@ describe('设置卡片', () => {
     const { events, emit } = fakeEvents()
     const sent: string[] = []
     const saved: Record<string, unknown>[] = []
-    let current = { enabled: true, proactive: false }
+    let current = { enabled: true }
     const settings = {
       get: async () => current,
       save: async (_peer: string, next: typeof current) => { current = next; saved.push(next); return next },
@@ -762,15 +674,15 @@ describe('设置卡片', () => {
     assert.match(sent[0] ?? '', /1 {2}人格/)
   })
 
-  it('回数字就是一次点击：4 切主动开关', async () => {
+  it('回数字打开分条设置，再选项只回一行确认', async () => {
     const { channel, sent, saved } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '菜单' } }] }))
     await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '4' } }] }))
+    await channel.handle(userMessage({ message_id: 'm3', item_list: [{ type: 1, text_item: { text: '1' } }] }))
     assert.equal(saved.length, 1)
-    assert.equal(saved[0]?.['proactive'], true)
-    // 只回一行确认，不再甩一张新卡片（微信里卡片不能就地更新，只会越堆越多）。
-    assert.equal(sent.length, 2)
-    assert.match(sent[sent.length - 1] ?? '', /主动搭话：开/)
+    assert.equal(saved[0]?.['split'], 'sentence')
+    assert.equal(sent.length, 3)
+    assert.match(sent[sent.length - 1] ?? '', /分条：按句子/)
   })
 
   it('非数字消息会收起卡片并照常进模型', async () => {

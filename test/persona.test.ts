@@ -79,11 +79,12 @@ describe('parsePersonaCard', () => {
     assert.ok(result.warnings.some(issue => issue.path === 'sampling.temperature'))
   })
 
-  it('安静时段格式错误回落默认值', () => {
-    const result = parsePersonaCard({ ...minimal, proactive: { quietHours: ['9:00', '25:00'] } })
+  it('旧人格卡的主动搭话字段不再进入运行配置', () => {
+    const result = parsePersonaCard({ ...minimal, proactive: { enabled: true, minIdleHours: 1 } })
     assert.equal(result.ok, true)
     if (!result.ok) return
-    assert.deepEqual(result.card.proactive.quietHours, ['23:00', '08:00'])
+    assert.equal('proactive' in result.card, false)
+    assert.ok(result.warnings.some(issue => issue.path === 'proactive' && issue.message.includes('已移除')))
   })
 
   it('示例最多保留 5 组，条目缺字段的丢掉', () => {

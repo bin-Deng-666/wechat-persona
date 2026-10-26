@@ -19,16 +19,13 @@ import { DEFAULT_REPLY_PLAN, resolvePlan, type ReplyPlan } from '../bridge/bubbl
 import { extractMemoryMarkers, type PeerMemory } from '../bridge/memory.ts'
 import { expandLocationTokens } from '../bridge/text.ts'
 import { MENU_TTL_MS, parseChoice, renderMenu, resolveChoice, type MenuPanel, type MenuView } from './menu.ts'
-import { composeInboundText } from '../bridge/prompt.ts'
 import type { PreparedMedia } from '../bridge/media.ts'
 import type { ReplyQueue } from '../bridge/reply.ts'
 import { extractAssistantText } from '../bridge/reply.ts'
 import { PeerSessions, sessionIdFor } from '../bridge/session.ts'
 import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../persona/settings.ts'
-import { proactiveInstruction, shouldPoke } from './proactive.ts'
-import { parseStickerToken } from '../persona/stickers.ts'
-import { normalizeStickerName } from '../persona/sticker-inbox.ts'
+import { extractStickerAnnotations, normalizeStickerName, type StickerLibrary } from '../persona/stickers.ts'
 import { formatAgo, formatHelp, formatNewChat, formatPersona, formatStatus, formatStyle, formatUnknown, parseCommand } from './commands.ts'
 import type { PeerGenerations } from '../bridge/generations.ts'
 
@@ -66,8 +63,6 @@ export interface ChannelOptions {
   maxBackoffMs?: number
   /** 时钟，测试用。 */
   now?: () => number
-  /** 时区，注入给 prompt。 */
-  timeZone?: string
   /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
   settings?: ChatSettingsStore
   /** 每个聊天的对话代次（/new 用）；缺失表示不支持开新对话。 */
@@ -89,19 +84,14 @@ export interface ChannelOptions {
   sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
   prepareMedia?: (items: readonly MessageItem[], peerId?: string) => Promise<PreparedMedia>
-  /** 每个 peer 的最后活跃时间；缺省只存内存（重启后主动搭话会失效）。 */
+  /** 每个 peer 的最后活跃时间，用于聊天列表和状态展示。 */
   activity?: ActivityStore
   /** 跨会话记忆；缺省表示不支持「记住」。 */
   memory?: PeerMemory
   /** 当前模型 id，只用于设置卡片展示。 */
   modelLabel?: string
-  /** 收表情：把最近一张入站图片收进表情库。 */
-  stickerInbox?: {
-    adopt: (peerId: string, name: string) => Promise<string | undefined>
-    latest: (peerId: string) => Promise<string | undefined>
-  }
-  /** 本地表情库里的名字，注入第一轮人设；缺省表示没有表情库。 */
-  stickerNames?: () => Promise<readonly string[]>
+  /** 联系人隔离的表情目录、自动识别结果和手动收藏。 */
+  stickers?: Pick<StickerLibrary, 'names' | 'annotate' | 'adoptLatest'>
   /** 连发几条消息的合并窗口，毫秒；0 表示每条都单独成轮。 */
   mergeWindowMs?: number
   /** 一轮跑多久之后先回一句「还在弄」，毫秒；0 表示不提示。 */
@@ -160,8 +150,6 @@ export class Channel {
   private readonly contextTokens = new Map<string, string>()
   /** 已处理的 message_id，防重放。 */
   private readonly seen = new Set<string>()
-  /** 已经有过历史、不该再注入完整人设的 peer。 */
-  private readonly warmed = new Set<string>()
   /** 正在合并窗口里攒消息的 peer。 */
   private readonly pending = new Map<string, PendingInbound>()
   /** peer → 这个聊天的发送形态（人格卡 + 聊天设置算出来的）。 */
@@ -195,7 +183,7 @@ export class Channel {
     this.running = true
     this.abort = new AbortController()
     this.snapshot = await this.options.personas.snapshot()
-    // 先恢复「谁安静了多久」：否则重启后主动搭话要到用户先说话才会重新开始计时。
+    // 恢复聊天列表和最后活跃时间。
     await this.activity.load?.()
     this.subscribeReplies()
 
@@ -254,10 +242,24 @@ export class Channel {
     this.unsubscribe = undefined
   }
 
-  /** 停止轮询并等当前一轮处理完。 */
+  /** 停止接收和会话驱动，撤销监听器，等已接受的回复排空。 */
   async stop(): Promise<void> {
     this.running = false
     this.abort?.abort()
+    this.unsubscribe?.()
+    this.unsubscribe = undefined
+    for (const entry of this.pending.values()) if (entry.timer !== undefined) clearTimeout(entry.timer)
+    this.pending.clear()
+    for (const timer of this.progress.values()) clearTimeout(timer)
+    this.progress.clear()
+    await this.options.sessions.disposeAll?.()
+    await this.whenIdle()
+    await this.activity.flush?.()
+  }
+
+  /** 等识别结果落盘和文字/表情发送完成。 */
+  async whenIdle(): Promise<void> {
+    while (this.replyWork.size > 0) await Promise.all([...this.replyWork.values()])
     await this.options.replies.whenIdle()
   }
 
@@ -367,7 +369,7 @@ export class Channel {
   private async applyChoice(peerId: string, panel: MenuPanel, choice: number, contextToken: string | undefined): Promise<void> {
     const resolved = resolveChoice(panel, choice)
     if (resolved.kind === 'close') {
-      await this.answer(peerId, '好，设置先收起来。发 /menu 再打开。', contextToken)
+      await this.answer(peerId, '好，设置先收起来。发“菜单”再打开。', contextToken)
       return
     }
     if (resolved.kind === 'panel') {
@@ -385,29 +387,18 @@ export class Channel {
     const card = PersonaStore.resolve(current.personaId ?? this.options.defaultPersona, snapshot)
 
     switch (resolved.action) {
-      case 'toggle-proactive': {
-        if (settings === undefined) break
-        const next = { ...current, proactive: !current.proactive }
-        await settings.save(peerId, next)
-        const hint = next.proactive && !card.proactive.enabled
-          ? `（但人格卡「${card.name}」没开主动，仍然不会开口）`
-          : ''
-        await this.answer(peerId, `主动搭话：${next.proactive ? '开' : '关'}${hint}`, contextToken)
-        return
-      }
       case 'new-chat': {
         if (this.options.generations === undefined) {
           await this.answer(peerId, '这个部署没有开启多段对话。', contextToken)
           return
         }
         await this.options.generations.bump(peerId)
-        this.warmed.delete(peerId)
         await this.answer(peerId, '开了新对话：之前的内容还在记录里，但这轮开始不再带进上下文。', contextToken)
         return
       }
       case 'sticker-library': {
         // 只是展示：表情的发送仍由模型在回复里写 [表情:名字] 决定。
-        const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+        const names = await this.options.stickers?.names(peerId) ?? []
         await this.answer(peerId, names.length === 0 ? '表情库是空的：把图片放进 stickers/ 目录就能用。' : `表情库（${String(names.length)} 张）：\n${names.join('、')}`, contextToken)
         return
       }
@@ -456,7 +447,6 @@ export class Channel {
           const picked = [...snapshot.personas.values()][index]
           if (picked !== undefined) {
             await settings.save(peerId, { ...current, personaId: picked.card.id })
-            this.warmed.delete(peerId)
             await this.answer(peerId, `已切到「${picked.card.name}」，下一轮生效。`, contextToken)
             return
           }
@@ -473,7 +463,7 @@ export class Channel {
     const settings = await this.settingsFor(peerId)
     const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
     const plan = resolvePlan(card, settings)
-    const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+    const names = await this.options.stickers?.names(peerId) ?? []
     return {
       personaId: card.id,
       personaName: card.name,
@@ -481,7 +471,6 @@ export class Channel {
       model: this.options.modelLabel ?? '',
       memoryCount: this.options.memory?.get(peerId).length ?? 0,
       memoryFacts: this.options.memory?.get(peerId) ?? [],
-      proactive: settings.proactive,
       maxChars: plan.softChars,
       split: plan.splitMode,
       overridden: settings.maxChars !== undefined || settings.split !== undefined,
@@ -556,25 +545,11 @@ export class Channel {
 
       const snapshot = await this.ensureSnapshot()
       const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
-      const first = !this.warmed.has(peerId)
       const plan = resolvePlan(card, settings)
       this.plans.set(peerId, plan)
 
-      const memory = this.options.memory?.lineFor(peerId)
-      const text = composeInboundText({
-        card,
-        peer: peerId,
-        text: pending.texts.join('\n'),
-        first,
-        // 每轮都带表情名：库可能是会话开始后才填的。
-        ...(await this.stickerHint()),
-        ...(memory === undefined ? {} : { memory }),
-        ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }),
-        ...(this.options.now === undefined ? {} : { now: new Date(this.options.now()) }),
-      })
-
-      // 先记「已经暖过」再投递：投递失败重来时不该再灌一遍完整设定。
-      this.warmed.add(peerId)
+      // 只投递微信原文和附件；人格、记忆等由会话系统提示词负责。
+      const text = pending.texts.filter(part => part !== '').join('\n')
 
       // 媒体：能附上就附，附不上就把说明拼进文字——丢图可以，丢消息不行。
       let prepared: PreparedMedia = { parts: [], notes: [] }
@@ -585,12 +560,11 @@ export class Channel {
           this.options.report?.('媒体预处理失败', { error: String(error) })
         }
       }
-      const notesText = prepared.notes.length === 0 ? '' : `\n${prepared.notes.join('\n')}`
-
-      const userMessage = createUserMessage({
-        content: [{ type: 'text', text: `${text}${notesText}` }, ...prepared.parts] as never,
-        source: { kind: 'user' },
-      })
+      const body = [text, ...prepared.notes].filter(part => part !== '').join('\n')
+      const content = [...(body === '' ? [] : [{ type: 'text', text: body }]), ...prepared.parts]
+      // 无法读取的媒体仍需明确说明；成功的纯图片消息不额外伪造用户文字。
+      if (content.length === 0) content.push({ type: 'text', text: '（收到一条无法读取的消息）' })
+      const userMessage = createUserMessage({ content: content as never, source: { kind: 'user' } })
       this.activity.touch(peerId, (this.options.now ?? Date.now)())
       this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
       this.options.report?.(`投递给模型（合并 ${String(pending.texts.length)} 条）`)
@@ -602,17 +576,6 @@ export class Channel {
       this.clearProgress(peerId)
       this.options.report?.('投递给模型失败', { peerId, error: String(error) })
       this.notice(peerId, '这条我没接上（会话没起来），再发一次试试。')
-    }
-  }
-
-  /** 第一轮注入表情库名字；没有库就不注入（否则模型会编名字）。 */
-  private async stickerHint(): Promise<{ stickers?: readonly string[] }> {
-    if (this.options.stickerNames === undefined) return {}
-    try {
-      const names = await this.options.stickerNames()
-      return names.length === 0 ? {} : { stickers: names }
-    } catch {
-      return {}
     }
   }
 
@@ -683,8 +646,6 @@ export class Channel {
         }
         // 旧会话不 dispose：它的历史还在，只是这个聊天不再往那儿投递。
         const next = await this.options.generations.bump(peerId)
-        // 新会话是空的，得重新注入完整人设；否则它只收到一行提醒，等于没人设。
-        this.warmed.delete(peerId)
         reply(formatNewChat(next))
         this.options.report?.('开了新对话', { peerId, generation: next })
         return
@@ -740,11 +701,11 @@ export class Channel {
             reply('用法：/表情 收 名字（名字不超过 24 字，不能带空格和方括号）')
             return
           }
-          if (this.options.stickerInbox === undefined) {
+          if (this.options.stickers === undefined) {
             reply('这个部署没有表情库目录。')
             return
           }
-          const saved = await this.options.stickerInbox.adopt(peerId, name)
+          const saved = await this.options.stickers.adoptLatest(peerId, name)
           reply(saved === undefined
             ? '最近没有可收的图：先发一张图给我，再说 /表情 收 名字。'
             : `收好了：${saved}。之后它会用 [表情:${name}] 发这张。`)
@@ -760,7 +721,7 @@ export class Channel {
           reply(sent === true ? `已发出「${name}」。` : `没发出去：表情库里没有「${name}」。发 /表情 看有哪些。`)
           return
         }
-        const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+        const names = await this.options.stickers?.names(peerId) ?? []
         reply(names.length === 0
           ? '表情库是空的。把图片放进 stickers/ 目录（支持 png/jpg/gif/webp），或先发图再说「/表情 收 名字」。'
           : `表情库（${String(names.length)} 张）：\n${names.join('、')}\n\n发 /表情 发 名字 可以直接发一张。`)
@@ -822,7 +783,7 @@ export class Channel {
 
         const chars = Number(wanted)
         if (!Number.isFinite(chars)) {
-          reply('用法：/style 160（改字数）、/style sentence（按句切）、/style none（不切）、/style reset（恢复人格卡）。')
+          reply('用法：分条 160（改字数）、分条 按句、分条 不切、分条 恢复。')
           return
         }
         const clamped = Math.round(Math.min(4_096, Math.max(20, chars)))
@@ -836,11 +797,6 @@ export class Channel {
       default:
         reply(formatUnknown(command.name))
     }
-  }
-
-  /** 读某个 peer 的最近活跃时间（毫秒）；没说过话返回 undefined。 */
-  lastSeen(peerId: string): number | undefined {
-    return this.activity.get(peerId)
   }
 
   /**
@@ -873,72 +829,6 @@ export class Channel {
     return this.activity.peers()
   }
 
-  /**
-   * 记一次活跃。
-   *
-   * 正常路径由入站消息触发；这个公开入口给定时器与测试用——
-   * 主动搭话的判定必须能脱离「刚好收到一条消息」来测。
-   */
-  markActive(peerId: string, at: number): void {
-    this.activity.touch(peerId, at)
-  }
-
-  /**
-   * 让某个 peer 的模型主动说一句。
-   *
-   * 走的是正常的一轮：投一条「主动开口」的指令，回答由回复队列发出去。
-   * 这样主动消息和普通回复共用同一条投递路径，不需要第二套发送逻辑。
-   *
-   * @param peerId - 目标用户。
-   * @returns 是否真的发起了这一轮。
-   */
-  async poke(peerId: string): Promise<boolean> {
-    const now = (this.options.now ?? Date.now)()
-    const settings = this.options.settings === undefined ? DEFAULT_CHAT_SETTINGS : await this.options.settings.get(peerId)
-    const snapshot = await this.ensureSnapshot()
-    const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
-
-    const allowed = shouldPoke({
-      now,
-      lastSeenAt: this.activity.get(peerId),
-      minIdleHours: card.proactive.minIdleHours,
-      quietHours: card.proactive.quietHours,
-      enabled: settings.proactive && settings.enabled && card.proactive.enabled,
-    })
-    if (!allowed) return false
-
-    const plan = resolvePlan(card, settings)
-    this.plans.set(peerId, plan)
-    const text = composeInboundText({ card, peer: peerId, text: proactiveInstruction(), first: false })
-    const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-    // 先记时间再投递：投递失败也不该在下一分钟后重复轰炸。
-    this.activity.touch(peerId, now)
-    this.startProgress(peerId)
-    await this.options.sessions.deliver(peerId, message as never)
-    return true
-  }
-
-  /**
-   * 起一个定时器，周期性检查所有聊过的 peer。
-   * @param intervalMs - 检查间隔。
-   * @returns 停止函数。
-   */
-  startProactive(intervalMs = 10 * 60_000): () => void {
-    const timer = setInterval(() => {
-      void (async () => {
-        for (const peerId of this.knownPeers()) {
-          try {
-            await this.poke(peerId)
-          } catch (error) {
-            this.options.report?.('主动搭话失败', { peerId, error: String(error) })
-          }
-        }
-      })()
-    }, intervalMs)
-    timer.unref()
-    return () => { clearInterval(timer) }
-  }
-
   private subscribeReplies(): void {
     this.unsubscribe = this.options.events.on('session/event', (session, event) => {
       const peerId = this.peerBySession.get(String(session.id))
@@ -962,41 +852,37 @@ export class Channel {
       // 有正式回答就说明这轮还活着，别再补「还在弄」。
       this.clearProgress(peerId)
       this.turnActive.delete(peerId)
-      // 「记住」标记是给通道看的：先摘掉再发，用户不该看到它。
-      const recalled = extractMemoryMarkers(text)
-      if (recalled.facts.length > 0) {
-        void this.options.memory?.remember(peerId, recalled.facts).catch((error: unknown) => {
-          this.options.report?.('记忆写入失败', { error: String(error) })
-        })
-      }
-      // 位置：协议没有位置消息，只能展开成「名字 + 地图链接」。
-      const body = expandLocationTokens(recalled.text)
-      if (body === '') return
-
-      const token = this.contextTokens.get(peerId)
-      const plan = this.plans.get(peerId)
-
-      // 表情：模型写了 `[表情:名字]` 就先发图，再把剩下的文字发出去。
-      // 图没发成功就退化成文字，绝不让整条回复消失。
-      const sticker = parseStickerToken(body)
-      const sendSticker = this.options.sendSticker
-      if (sticker !== undefined && sendSticker !== undefined) {
-        void (async () => {
-          const sent = await sendSticker(peerId, sticker.name, token).catch((error: unknown) => {
-            this.options.report?.('表情发送失败', { name: sticker.name, error: String(error) })
-            return false
-          })
-          const rest = sent ? sticker.text : body.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
-          if (rest !== '') await this.options.replies.enqueue(peerId, rest, token, plan)
-        })()
-        return
-      }
-
-      const queuedAt = (this.options.now ?? Date.now)()
-      void this.options.replies.enqueue(peerId, body, token, plan).then(() => {
-        this.options.report?.(`回复已发出（模型出字到发完 ${String((this.options.now ?? Date.now)() - queuedAt)}ms）`)
-      })
+      this.queueAssistantReply(peerId, text)
     })
+  }
+
+  /** 先持久化素材识别结果，再排队发送；同一联系人严格按事件顺序处理。 */
+  private readonly replyWork = new Map<string, Promise<void>>()
+
+  private queueAssistantReply(peerId: string, text: string): void {
+    const token = this.contextTokens.get(peerId)
+    const plan = this.plans.get(peerId)
+    const previous = this.replyWork.get(peerId) ?? Promise.resolve()
+    const job = previous.catch(() => {}).then(async () => {
+      const recalled = extractMemoryMarkers(text)
+      const classified = extractStickerAnnotations(recalled.text)
+      try {
+        await this.options.memory?.remember(peerId, recalled.facts)
+        await this.options.stickers?.annotate(peerId, classified.annotations)
+      } catch (error) {
+        this.options.report?.('保存记忆或表情识别结果失败', { peerId, error: String(error) })
+      }
+      const body = expandLocationTokens(classified.text)
+      if (body === '') return
+      const queuedAt = (this.options.now ?? Date.now)()
+      await this.options.replies.enqueue(peerId, body, token, plan)
+      this.options.report?.(`回复已发出（模型出字到发完 ${String((this.options.now ?? Date.now)() - queuedAt)}ms）`)
+    }).catch((error: unknown) => {
+      this.options.report?.('回复处理失败', { peerId, error: String(error) })
+    }).finally(() => {
+      if (this.replyWork.get(peerId) === job) this.replyWork.delete(peerId)
+    })
+    this.replyWork.set(peerId, job)
   }
 
   /**
@@ -1059,7 +945,7 @@ export class Channel {
       case 'blocked':
         // 这个 reason 不是「等审批」：它来自 agent 前置条件（会话已归档、目标轮次过期）。
         // 审批不会结束一轮——它挂在这一步的工具调用里，答复后继续。
-        this.notice(peerId, '这一轮被前置条件挡下了（会话可能已归档），可以发 /new 重开一段。')
+        this.notice(peerId, '这一轮被前置条件挡下了（会话可能已归档），可以发“新对话”重开一段。')
         return
       case 'max-tokens':
         this.notice(peerId, '回答到长度上限断了，让我接着说就行。')

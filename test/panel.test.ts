@@ -19,7 +19,7 @@ function handlers(overrides: Partial<Parameters<typeof createPanel>[0]> = {}) {
     verifyCode: async (code: string) => { calls.push(`verify:${code}`); return { phase: 'connected', message: '已连接' } satisfies LoginView },
     logout: async () => { calls.push('logout'); return idle },
     personas: async () => { calls.push('personas'); return [{ id: 'xiao-jing', name: '小鲸', description: '', warnings: [] }] },
-    chats: async () => { calls.push('chats'); return [{ peerId: 'wxid-1', enabled: true, proactive: false }] },
+    chats: async () => { calls.push('chats'); return [{ peerId: 'wxid-1', enabled: true }] },
     readPersona: async (id: string) => { calls.push(`read:${id}`); return { ok: true, raw: '{"id":"xiao-jing"}' } },
     writePersona: async (id: string, raw: string) => {
       calls.push(`write:${id}`)
@@ -27,7 +27,7 @@ function handlers(overrides: Partial<Parameters<typeof createPanel>[0]> = {}) {
     },
     setChat: async (patch: { peerId: string; enabled?: boolean }) => {
       calls.push(`setChat:${patch.peerId}`)
-      return { peerId: patch.peerId, enabled: patch.enabled ?? true, proactive: false }
+      return { peerId: patch.peerId, enabled: patch.enabled ?? true }
     },
   }
   return { handlers: { ...base, ...overrides }, calls }

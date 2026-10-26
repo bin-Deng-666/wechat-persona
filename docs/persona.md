@@ -36,7 +36,6 @@ data/personas/xiao-jing/
   ],
 
   "greeting": "来了",
-  "proactive": { "enabled": false, "minIdleHours": 6, "quietHours": ["23:00", "08:00"] },
   "media": { "understandImages": true, "sendStickers": true }
 }
 ```
@@ -53,7 +52,15 @@ data/personas/xiao-jing/
 | `sampling` | | 缺省 `temperature: 0.7`, `maxTokens: 800` |
 | `reply.maxChars` | | 软约束（写进 prompt + 发送时硬切），缺省 120 |
 | `examples` | | 最多 5 组，纯文本 few-shot |
-| `proactive` | | M3 生效 |
+| `media.sendStickers` | | 控制当前人格的表情目录与自动识别指令 |
+
+## 在会话中使用
+
+人格通过当前 DSH agent 作用域的 `system-prompt/assemble` 进入真正的 system 提示词。每次请求读取当前卡片、聊天设置、记忆和表情目录；用户消息只包含微信原文和附件，不再有“首轮设定”或“继续扮演”提醒。
+
+“人格 <id>”或“菜单 → 人格”切换后，下一次请求读取新卡片。修改文件也在下一次请求生效。没有主动搭话字段或定时器。
+
+`sampling` 当前负责卡片解析与校验，实际模型参数由 DSH 会话决定。`media.understandImages` 是预留字段；实际视觉输入取决于当前宿主和模型能力。
 
 ## Prompt 组装（纯函数）
 

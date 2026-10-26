@@ -20,6 +20,5 @@
   ],
 
   "greeting": "来了",
-  "proactive": { "enabled": false, "minIdleHours": 6, "quietHours": ["23:00", "08:00"] },
   "media": { "understandImages": true, "sendStickers": true }
 }

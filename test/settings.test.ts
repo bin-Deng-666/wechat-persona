@@ -1,101 +1,53 @@
-/**
- * 每个聊天设置的测试：解析容错与落盘往返。
- */
-
+/** 会话设置：解析、热更新与旧字段淘汰。 */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
-
 import { ChatSettingsStore, DEFAULT_CHAT_SETTINGS, parseChatSettings } from '../src/persona/settings.ts'
 
 const dirs: string[] = []
-
-async function makeRoot(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'chat-settings-'))
-  dirs.push(dir)
-  return dir
-}
-
-after(async () => {
-  for (const dir of dirs) await rm(dir, { recursive: true, force: true })
-})
+async function root() { const dir = await mkdtemp(join(tmpdir(), 'chat-settings-')); dirs.push(dir); return dir }
+after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }) })
 
 describe('parseChatSettings', () => {
-  it('空对象得到默认值', () => {
-    assert.deepEqual(parseChatSettings({}), DEFAULT_CHAT_SETTINGS)
-    assert.deepEqual(parseChatSettings(null), DEFAULT_CHAT_SETTINGS)
-    assert.deepEqual(parseChatSettings('nope'), DEFAULT_CHAT_SETTINGS)
+  it('空对象和坏输入回落默认值', () => {
+    for (const value of [{}, null, 'nope']) assert.deepEqual(parseChatSettings(value), DEFAULT_CHAT_SETTINGS)
   })
-
-  it('坏字段逐项丢弃，好字段保留', () => {
-    const settings = parseChatSettings({ personaId: '  xiao-jing ', enabled: false, maxChars: 'big', proactive: 'yes' })
-    assert.equal(settings.personaId, 'xiao-jing')
-    assert.equal(settings.enabled, false)
-    assert.equal(settings.maxChars, undefined)
-    assert.equal(settings.proactive, false)
+  it('坏字段逐项丢弃，主动搭话字段不再生效', () => {
+    assert.deepEqual(parseChatSettings({ personaId: ' xiao-jing ', enabled: false, maxChars: 'big' }), { enabled: false, personaId: 'xiao-jing' })
   })
-
-  it('maxChars 被夹到合法范围', () => {
+  it('maxChars 有边界，空人格不绑定', () => {
     assert.equal(parseChatSettings({ maxChars: 1 }).maxChars, 20)
-    assert.equal(parseChatSettings({ maxChars: 99_999 }).maxChars, 4_096)
-    assert.equal(parseChatSettings({ maxChars: 300 }).maxChars, 300)
-  })
-
-  it('空白 personaId 视为未设置', () => {
-    assert.equal(parseChatSettings({ personaId: '   ' }).personaId, undefined)
+    assert.equal(parseChatSettings({ maxChars: 99_999 }).maxChars, 4096)
+    assert.equal(parseChatSettings({ personaId: ' ' }).personaId, undefined)
   })
 })
 
 describe('ChatSettingsStore', () => {
-  it('没有文件时返回默认值', async () => {
-    const store = new ChatSettingsStore(join(await makeRoot(), 'chats'))
-    assert.deepEqual(await store.get('wxid-1'), DEFAULT_CHAT_SETTINGS)
+  it('不存在时返回默认值，保存后可读回', async () => {
+    const store = new ChatSettingsStore(await root())
+    assert.deepEqual(await store.get('u1'), DEFAULT_CHAT_SETTINGS)
+    const value = { enabled: true, personaId: 'xiao-jing', maxChars: 80 }
+    await store.save('u1', value)
+    assert.deepEqual(await store.get('u1'), value)
   })
-
-  it('保存后能读回', async () => {
-    const root = await makeRoot()
-    const store = new ChatSettingsStore(root)
-    await store.save('wxid-1', { enabled: true, proactive: true, personaId: 'xiao-jing', maxChars: 80 })
-    const loaded = await store.get('wxid-1')
-    assert.deepEqual(loaded, { enabled: true, proactive: true, personaId: 'xiao-jing', maxChars: 80 })
+  it('缓存复用，特殊 peer 和真实 ID 可恢复', async () => {
+    const store = new ChatSettingsStore(await root())
+    await store.save('a/b:c', { enabled: true })
+    const first = await store.get('a/b:c')
+    assert.equal(await store.get('a/b:c'), first)
+    assert.deepEqual(await store.listPeers(), ['a/b:c'])
   })
-
-  it('同一个 store 第二次读命中缓存', async () => {
-    const store = new ChatSettingsStore(await makeRoot())
-    await store.save('wxid-1', { enabled: false, proactive: false })
-    const first = await store.get('wxid-1')
-    const second = await store.get('wxid-1')
-    assert.equal(first, second)
-  })
-
-  it('含特殊字符的 peerId 也能落盘', async () => {
-    const store = new ChatSettingsStore(await makeRoot())
-    await store.save('a/b:c', { enabled: true, proactive: false })
-    assert.deepEqual(await store.get('a/b:c'), { enabled: true, proactive: false })
-  })
-
-  it('listPeers 返回真实 peer id', async () => {
-    const store = new ChatSettingsStore(await makeRoot())
-    await store.save('wxid-1', { enabled: true, proactive: false })
-    await store.save('a/b:c', { enabled: true, proactive: false })
-    assert.deepEqual((await store.listPeers()).sort(), ['a/b:c', 'wxid-1'])
-  })
-})
-
-describe('ChatSettingsStore 热更新', () => {
-  it('文件被改过之后，下一次 get 读到新值（不用重启）', async () => {
-    const root = await makeRoot()
-    const store = new ChatSettingsStore(root)
-    await store.save('wxid-1', { enabled: true, proactive: false })
-    assert.equal((await store.get('wxid-1')).proactive, false)
-
-    // 模拟用户手改文件：内容变、mtime 变
-    const file = join(root, encodeURIComponent('wxid-1').replaceAll('%', '_'), 'settings.json')
-    await new Promise(resolve => setTimeout(resolve, 12))
-    await writeFile(file, JSON.stringify({ peerId: 'wxid-1', enabled: true, proactive: true }), 'utf8')
-
-    assert.equal((await store.get('wxid-1')).proactive, true)
+  it('文件修改后下一次读取生效', async () => {
+    const dir = await root()
+    const store = new ChatSettingsStore(dir)
+    await store.save('u1', { enabled: true })
+    await store.get('u1')
+    const file = join(dir, 'u1', 'settings.json')
+    await writeFile(file, JSON.stringify({ peerId: 'u1', enabled: false, maxChars: 200 }))
+    const later = new Date(Date.now() + 1000)
+    await utimes(file, later, later)
+    assert.deepEqual(await store.get('u1'), { enabled: false, maxChars: 200 })
   })
 })

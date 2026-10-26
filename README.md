@@ -1,176 +1,136 @@
 # wechat-persona
 
-微信里的「AI 联系人」——一个 DSH 插件：扫码登录后，你的微信通讯录里多一个能单聊的角色，
-有人格、有记忆、会看图、会发表情包，说话像人而不像客服。
+运行在 DSH 进程内的微信单聊人格通道，通过腾讯 iLink Bot 接口收发消息，复用宿主的模型、工具、权限与持久化会话。
 
-- **协议层**：腾讯 2026 年官方开放的 iLink Bot 通道（`ilinkai.weixin.qq.com`），
-  按公开协议文档实现，不是 Hook、不是协议破解。
-- **产品层**：人格卡（prompt / 温度 / 示例对话）、每个聊天独立上下文与设置、
-  微信内命令（`/new` `/status` `/persona`）、图片与表情、主动搭话。
-- **运行形态**：DSH 插件，跑在 Harness 进程内，复用 DSH 的会话、模型、工具与权限。
+当前代码支持人格聊天、图片理解、GIF 预览、自动表情收藏、按需多条回复、中文设置、记忆和文件回传。类型检查、单元测试与集成测试覆盖本地流程；微信客户端上的动图展示仍需真机验收。
 
-> 名字是占位，随时可改（`package.json` 的 `name` + profile patch 的 `id`）。
+## 对话如何组成
 
-## 状态
+- **系统提示词**：人格、说话方式、规则、当前时间、记忆、可用表情及适用场景、通道控制标记。
+- **用户消息**：微信原文和附件；模型不支持媒体或下载失败时附上简短的读取失败说明。
+- **模型回复**：最终文字进入发送队列，控制标记由通道处理，不显示到微信。
 
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| M0 | 骨架：目录、构建、配置、文档 | ✅ 完成（profile 实测待做） |
-| M1 | iLink 协议层 + 扫码登录 + 长轮询收发文本 | ✅ 代码完成，待真实扫码验证 |
-| M2 | 人格聊天：人格卡、per-chat 设置、上下文、图片理解 | ✅ 完成（真机待验证） |
-| M3 | 表情发送、主动搭话 | ✅ 完成；记忆摘要未开始 |
+人格通过 DSH 的会话作用域 `system-prompt/assemble` 接入，每次模型请求读取当前人格和聊天设置。新建、恢复、借用会话使用同一机制；切人格、改文件、清记忆后，下一次请求生效。宿主的工具规则保持参与组装。
 
-进度与验收标准见 [docs/roadmap.md](docs/roadmap.md)。
+旧版本已写进历史的“角色设定”和“继续扮演”文字不会自动改写。升级后发 **新对话**，可以从干净的用户历史开始，旧记录仍保留。
 
-## 目录
+## 微信里直接使用中文
+
+| 发什么 | 作用 |
+|---|---|
+| **菜单** / **设置** | 打开设置卡片，回复数字选择人格、模型信息、记忆、分条、新对话、表情库 |
+| 帮助 | 列出指令 |
+| 新对话 | 新开一段上下文，保留旧记录 |
+| 状态 | 看当前人格、对话代次、消息数和权限 |
+| 人格 | 列出人格卡 |
+| 人格 xiao-jing | 切换人格 |
+| 分条 | 看当前发送方式 |
+| 分条 160 | 覆盖单条目标字数 |
+| 分条 按句 / 按段 / 不切 / 恢复 | 调整分条方式，或恢复人格卡设置 |
+| 停止 | 中断当前一轮及待处理输入 |
+| 表情 | 列出这个聊天可用的表情 |
+| 表情 收 名字 | 明确收藏最近收到的图片 |
+| 表情 发 名字 | 直接发送已收藏表情 |
+
+原来的 `/menu`、`/new`、`/persona`、`/style` 等仍可使用。中文指令按整条消息和明确参数格式匹配，“菜单怎么设计”“帮我打开菜单”等聊天内容不会被截成指令。
+
+菜单有效期 5 分钟。正常聊天会收起菜单；数字只在菜单有效期间作为设置选择。通道只响应收到的消息，**没有定时主动搭话及其设置开关**。审批和长任务提示属于你已发起任务的反馈。
+
+## 按需回复一条或多条
+
+短回复默认一条发完。模型在确实需要独立反应或自然停顿时，可以使用 `[分条]` 指定消息边界，通常 2–3 条即可；没有标记就不会为了“像人”强拆每句话。超长回答仍遵守长度和传输上限。
+
+文字与表情进入同一个联系人发送队列，保持顺序，共用节流、失败重试和输入状态。表情失败时保留文字。回复前有短暂停顿，多条之间有间隔；命令和审批提示立即处理。
+
+## 图片、GIF 与自动表情收藏
+
+收到可以下载的 PNG/JPEG/GIF/WebP 后：
+
+1. 保存原始字节，按 SHA-256 去重。
+2. 支持视觉的模型接收图片；GIF 解码为最多三张 PNG 预览，原件不转码。
+3. 图片先处于待判断状态。模型确认是表情后补充名字、画面/文字描述和适用场景；截图、证件、普通照片与文档不会直接成为可发送表情。
+4. 已确认的目录进入后续系统提示词，模型按语境选择 `[表情:素材ID]`，通道发送对应原件。
+
+自动收藏按联系人隔离：同一文件可共用存储，但某人发来的素材和描述不会进入别人的可用表情列表。人工放入 `stickers/shared/` 的图片为共享表情。原有直接放在 `stickers/` 根目录的图片也可使用。
+
+看不到图片时不猜测含义。没有视觉模型或附件服务时可以归档原件，但无法自动确认表情语义；此时仍可用“表情 收 名字”明确收藏。GIF 预览有画布、帧数和总解码量上限，超限或损坏时给出媒体读取说明。
+
+**协议边界**：iLink 提供的原始媒体决定能保存什么。如果服务端只提供静态缩略图，就无法还原原动画。发送 GIF 时保留原始字节，但微信是否按动图播放、是否显示成原生表情形式，必须真机验证，不能以本地上传成功替代。
+
+## 文件与模块
 
 ```text
-wechat-persona/
-├── src/                        插件源码（构建产物在 lib/，不入库）
-│   ├── index.ts                入口：Coordinator（登录态、通道启停、面板、命令接线）
-│   ├── config.ts               配置 schema（全部 volatile，GUI 可编辑）
-│   ├── credentials.ts          凭据落盘（0600、原子写）
-│   ├── ilink/                  iLink 协议：api / 登录状态机 / 媒体下载 / 发图 / 类型
-│   ├── bridge/                 会话桥接：peer⇄会话、回复队列、文本切分、媒体降级、
-│   │                           人设注入、准入、对话代次
-│   ├── persona/                人格卡解析与加载、prompt 组装、每聊天设置、表情库
-│   └── channel/                运行时（轮询/命令/主动搭话）、登录会话、面板路由、
-│                               输入状态、文件日志、二维码
-├── test/                       单测（node --test，237 项，行覆盖 91%）
-├── scripts/                    一次性/运维脚本，见 scripts/README.md
-├── docs/                       文档索引见 docs/README.md
-├── examples/personas/          可直接复制的人格卡样例
-├── release/                    打包产物（gitignore）
-└── lib/                        构建产物（gitignore）
+src/
+├── index.ts                 宿主接线、登录态、生命周期、文件发送
+├── config.ts                插件配置
+├── credentials.ts           登录凭据原子写入
+├── ilink/                   登录、轮询、消息、媒体 CDN、AES、上传
+├── bridge/
+│   ├── prompt.ts            会话作用域系统提示词
+│   ├── session.ts           peer 与 DSH 会话的创建、恢复、借用
+│   ├── media.ts / gif.ts     媒体处理和 GIF 多帧预览
+│   ├── reply.ts / bubbles.ts 有序回复队列和可选消息边界
+│   └── ...                  准入、代次、记忆、文本与审批
+├── persona/                 人格卡、聊天设置、素材和表情目录
+└── channel/                 轮询运行时、中文指令、菜单、面板与输入状态
 ```
 
-## 数据长什么样
+运行数据默认位于 `~/.dsh/wechat-persona`：
 
 ```text
-<dataDir>/                    默认 ~/.dsh/wechat-persona
-├── account.json              登录凭据（0600，删掉即退出登录）
-├── logs/plugin-YYYY-MM-DD.log 插件自己的诊断日志（启动、轮询、发送失败都在这）
-├── cursor.json               每个账号的轮询游标（重启不重放）
-├── personas/<id>/persona.json  人格卡，见 docs/persona.md
-├── chats/<peer>/settings.json  每聊天：人格、是否回复、长度、是否主动
-└── stickers/<名字>.png|gif     表情库；模型写 [表情:名字] 就发这张
+account.json                   登录凭据（0600；删除即退出）
+cursor.json                    按账号保存轮询游标
+generations.json               “新对话”的会话代次
+last-seen.json                 聊天列表和最后活跃时间
+memories.json                  按联系人保存的记忆
+logs/plugin-YYYY-MM-DD.log      诊断日志
+personas/<id>/persona.json      人格卡，见 docs/persona.md
+chats/<peer>/settings.json      人格、启用状态、长度、分条设置
+stickers/
+├── shared/<名字>.png|gif        人工导入的共享表情
+├── assets/<hash前两位>/<完整hash>.gif|png|jpg|webp
+│                              按内容去重的原始字节
+└── chats/<联系人hash>/index.json
+                               来源、格式、时间、状态、名字、描述、场景、最近图片ID
 ```
 
-表情标记的约定：回复里写 `[表情:开心]`，通道会发 `stickers/开心.png`，
-再把标记之外的文字发出去；名字找不到或发送失败就退回纯文字。
+原件只用内容哈希命名。名字、说明、适用场景和收藏状态在联系人目录中维护，不靠复制文件重命名来管理。单张自动归档图片上限 20 MiB；模型目录最多提供近期 40 张已确认素材、20 张共享素材和 6 张待判断图片，控制提示词大小。
 
-## 安装（DSH 桌面版）
+## 安装与登录
 
-`desktop` profile 由桌面应用独占管理，命令行 `dsh plugin --profile desktop add` 会被拒绝，
-要用应用自带的 CLI：
+```bash
+npm install --legacy-peer-deps
+npm run typecheck
+npm test
+npm run build
+npm run pack
+```
+
+`pack` 产物在 `release/`。桌面版 profile 由桌面应用管理，使用应用自带 CLI：
 
 ```bash
 DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-npm run build && npm run pack        # 产物落到 release/
-"$DSH" plugin --profile desktop remove dsh-wechat-persona   # 升级时先移除
+"$DSH" plugin --profile desktop remove dsh-wechat-persona
 "$DSH" plugin --profile desktop add ./release/dsh-wechat-persona-<version>.tgz
 ```
 
-装完**完全退出并重开** DSH（bundle 层只在启动时组装）。
-
-## 登录
-
-桌面版的 GUI 跑在 Electron 里，普通浏览器拿不到它的 cookie，所以**面板那条路在桌面版走不通**
-（`/api/*` 一律 401，插件路由也只能挂在 `/api` 下）。登录改走终端：
+完全退出并重开 DSH 以重新组装 bundle。登录走终端：
 
 ```bash
-npm run login                      # 可加 --png /tmp/qr.png 把二维码写成图片
+npm run login
+# 同时生成二维码图片：
+npm run login -- --png /tmp/wechat-qr.png
 ```
 
-扫码 → 手机确认 → 凭据写入 `~/.dsh/wechat-persona/account.json`（0600）。
-**正在运行的 DSH 会在几秒内自动接上**（插件监听这个文件），不用重启。
+扫码并在手机确认后，凭据写入 `account.json`。正在运行的插件监听文件，无需为登录再次重启。桌面 Electron 的 cookie 无法由普通浏览器取得，面板不能代替上述登录流程；独立 Web 宿主的配置页仍保留。
 
-> `/persona-wechat/panel?key=…` 这套带密钥的公开入口是为 `dsh web`（真浏览器）准备的；
-> 桌面版宿主的 HTTP 层只把 `/api/*` 转给插件，所以它返回 404。**别指望它。**
+## 权限、记忆与限制
 
-## 微信里的命令
+- 默认仅扫码登录的微信账号可驱动机器人；`allow` 可显式指定白名单。
+- `cordis.patch.yml` 中桌面安装默认权限为 `danger-full-access`。要在微信收审批提示并回 `1/2/3`，改为 `workspace-write`。
+- 模型可用 `[记住: 简短事实]` 保存对方明确提供的个人信息。“菜单 → 记忆”可查看或清空；记忆进入系统提示词。自动长历史摘要尚未实现。
+- 模型用 `present` 交付的文件可回传到微信，单文件上限 100 MiB。
+- iLink 当前不提供可靠群聊、出站原生定位、原生按钮和出站语音支持。
+- 真机排障先看 `logs/plugin-*.log`；协议探针为 `scripts/probe-login.ts`。
 
-| 命令 | 作用 |
-|---|---|
-| `/help` | 列出命令 |
-| `/new` | 开新一段对话（旧记录保留，不再带上下文） |
-| `/status` | 当前人格、第几段对话、累计消息数、权限档位 |
-| `/persona` | 列出人格卡（→ 标当前） |
-| `/persona <id>` | 切换这个聊天的人格（立即生效） |
-| `/style` | 看当前分条方式（几条、每条约多少字、来源） |
-| `/style 160` | 每条气泡最多 160 字 |
-| `/style sentence` / `paragraph` / `none` | 按句切 / 按段切 / 不切 |
-| `/style reset` | 丢掉聊天设置，回到人格卡的值 |
-| `/stop` | 打断正在跑的这一轮（排队中的消息一起丢掉） |
-| `/menu` | 打开设置卡片：人格 / 模型 / 记忆 / 主动 / 分条 / 新对话 / 表情库 |
-| `/表情` | 看表情库 |
-| `/表情 收 名字` | 把对方刚发的那张图收进表情库，之后就能用 `[表情:名字]` 发 |
-
-命令不会发给模型；回复走和普通回复同一条队列（限流/切分/失败提示都复用）。
-
-## 它在微信里怎么说话
-
-| 行为 | 规则 | 想改怎么办 |
-|---|---|---|
-| 分条 | **默认一条发完**：不超过 600 字就一条；超了才按段落切，每条不超过上限 | `/style 200`、`/style sentence`（碎碎念）、`/style none` |
-| 连发合并 | 700 毫秒内的几条消息合并成一轮，不会一问三答 | 改 `mergeWindowMs`（代码默认值） |
-| 长任务 | 超过 25 秒没输出先回一句「还在弄」 | 改 `progressAfterMs` |
-| 失败 | 模型报错、被截断、被中断都会回一句原因，不静默 | — |
-| 文件 | 模型用 `present` 交付的文件（docx/pdf/zip）直接发到微信 | 单个文件上限 100 MB |
-| 审批 | 会话权限为 `ask` 时，把「要执行什么」发到微信，回 `1` 允许 / `2` 拒绝 / `3` 取消 | 见下面的权限说明 |
-| 主动 | 安静够久且不在免打扰时段才开口；活跃时间落盘，重启照样算 | 人格卡 `proactive` + 每聊天开关 |
-| 记忆 | 模型在回复里写 `[记住: …]` 就存下来，下一轮以「你记得」注入；`/menu → 记忆` 可看可清 | 存 `memories.json`，每聊天最多 30 条 |
-| 表情 | 收到的图先暂存；`/表情 收 名字` 才真正入库；库里的名字会注入第一轮人设 | `stickers/` + `stickers-inbox/` |
-| 定位 | 协议没有位置消息，只能发「名字 + 地图链接」 | 模型写 `[位置:纬度,经度,名字]` |
-| 节奏 | 回复前按长度停 0.35–2.5 秒再发，秒回是最像机器的地方 | `humanThinkingMs` |
-
-> 审批只有在权限档位不是 `danger-full-access` 时才会触发：那一档的审批策略是 `never`，
-> 服务端直接放行，根本不会问。想用微信审批，把 `cordis.patch.yml` 里的
-> `permission` 改成 `workspace-write`。
-
-## 配置（桌面版目前靠文件）
-
-```text
-~/.dsh/wechat-persona/
-├── account.json                登录凭据（0600；删掉 = 退出登录）
-├── cursor.json                 每个账号的轮询游标（重启不重放）
-├── generations.json            每个聊天的对话代次（/new 用）
-├── last-seen.json              每个聊天最后说话的时间（主动搭话用，重启不丢）
-├── memories.json               每个聊天记住的事（模型写 [记住: …] 才写进来）
-├── logs/plugin-YYYY-MM-DD.log  插件诊断日志，出问题先看这里
-├── personas/<id>/persona.json  人格卡（docs/persona.md）
-├── chats/<peer>/settings.json  每聊天：人格 / 是否回复 / 长度上限 / 切分粒度 / 是否主动
-└── stickers/<名字>.png|gif     表情库；回复里写 [表情:名字] 就发这张
-```
-
-改完文件**下一条消息即生效**（设置按 mtime 读、人格卡每条消息重扫），不用重启。
-
-## 本地开发
-
-```bash
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build
-```
-
-装进 profile 调试：
-
-```bash
-dsh plugin --profile desktop add /Users/dengbin/Desktop/wechat-persona
-# 完全退出并重开 DSH 后，在 GUI 的 Plugins 页扫码登录
-```
-
-## 与几个先行项目的关系
-
-| 项目 | 我们借什么 | 不借什么 |
-|---|---|---|
-| [dsh-channel-wechat](https://github.com/wangx-wx/dsh-channel-wechat)（MIT） | iLink 协议层的实现经验与边界（丢消息、限流、长文切分） | 直接依赖它的包；产品层完全自己写 |
-| [WeChatAgent](https://github.com/sourcepro5/WeChatAgent) | 产品设计：聊天/助手分权、按聊天授权、人格卡、表情包目录 | Windows Hook、数据库解密、OneBot 中转 |
-| 腾讯 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) | 官方协议规范与字段语义 | —— |
-
-协议层若直接改编自 dsh-channel-wechat 的代码，会在 [NOTICE.md](NOTICE.md) 与文件头保留 MIT 署名。
-
-## 许可
-
-MIT，见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
+更多说明见 [docs/README.md](docs/README.md)。协议实现参考腾讯 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 与 MIT 项目 [dsh-channel-wechat](https://github.com/wangx-wx/dsh-channel-wechat)，署名见 [NOTICE.md](NOTICE.md)。MIT 许可见 [LICENSE](LICENSE)。

@@ -87,7 +87,7 @@ describe('resolvePlan', () => {
   })
 
   it('聊天设置覆盖人格卡', () => {
-    const result = resolvePlan(parsed.card, { enabled: true, proactive: false, maxChars: 200, split: 'none' })
+    const result = resolvePlan(parsed.card, { enabled: true, maxChars: 200, split: 'none' })
     assert.equal(result.softChars, 200)
     assert.equal(result.splitMode, 'none')
   })

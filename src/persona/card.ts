@@ -30,13 +30,6 @@ export interface PersonaReply {
   split: 'paragraph' | 'sentence' | 'none'
 }
 
-export interface PersonaProactive {
-  enabled: boolean
-  minIdleHours: number
-  /** [开始, 结束]，跨零点允许，如 ['23:00','08:00']。 */
-  quietHours: [string, string]
-}
-
 export interface PersonaMedia {
   understandImages: boolean
   sendStickers: boolean
@@ -57,7 +50,6 @@ export interface PersonaCard {
   reply: PersonaReply
   examples: PersonaExample[]
   greeting: string
-  proactive: PersonaProactive
   media: PersonaMedia
 }
 
@@ -80,7 +72,6 @@ const MAX_EXAMPLES = 5
 const DEFAULTS = {
   sampling: { temperature: 0.7, maxTokens: 800 },
   reply: { maxChars: 120, split: 'paragraph' as const },
-  proactive: { enabled: false, minIdleHours: 6, quietHours: ['23:00', '08:00'] as [string, string] },
   media: { understandImages: true, sendStickers: true },
 }
 
@@ -153,8 +144,6 @@ function readNumber(
   }
   return clamped
 }
-
-const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/
 
 /**
  * 解析一张人格卡。
@@ -241,28 +230,21 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
     }
   }
 
-  const proactiveRaw = isRecord(raw.proactive) ? raw.proactive : {}
-  const quietRaw = proactiveRaw.quietHours
-  let quietHours: [string, string] = DEFAULTS.proactive.quietHours
-  if (Array.isArray(quietRaw) && quietRaw.length === 2) {
-    const [start, end] = quietRaw
-    const startOk = typeof start === 'string' && TIME_PATTERN.test(start)
-    const endOk = typeof end === 'string' && TIME_PATTERN.test(end)
-    if (startOk && endOk) quietHours = [start, end]
-    else warnings.push({ path: 'proactive.quietHours', message: '应为 ["HH:mm","HH:mm"]，已用默认值', severity: 'warn' })
-  } else if (quietRaw !== undefined) {
-    warnings.push({ path: 'proactive.quietHours', message: '应为两项数组，已用默认值', severity: 'warn' })
-  }
-  const proactive: PersonaProactive = {
-    enabled: proactiveRaw.enabled === true,
-    minIdleHours: readNumber(proactiveRaw.minIdleHours, DEFAULTS.proactive.minIdleHours, 'proactive.minIdleHours', warnings, 1, 720),
-    quietHours,
-  }
-
   const mediaRaw = isRecord(raw.media) ? raw.media : {}
   const media: PersonaMedia = {
     understandImages: mediaRaw.understandImages !== false,
     sendStickers: mediaRaw.sendStickers !== false,
+  }
+
+  // 不认识的字段要说话：`proactive` 被移除后，照旧写法会被静默忽略，
+  // 用户只会觉得「我明明配了它却不主动」。
+  const KNOWN_KEYS = new Set(['id', 'name', 'aliases', 'description', 'prompt', 'sampling', 'reply', 'examples', 'greeting', 'media', 'proactive'])
+  for (const key of Object.keys(raw)) {
+    if (key === 'proactive') {
+      warnings.push({ path: 'proactive', message: '主动搭话已移除，这个字段不再生效', severity: 'warn' })
+      continue
+    }
+    if (!KNOWN_KEYS.has(key)) warnings.push({ path: key, message: '不认识的字段，已忽略', severity: 'warn' })
   }
 
   if (issues.length > 0) return { ok: false, issues }
@@ -284,7 +266,6 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
       reply,
       examples,
       greeting: asString(raw.greeting) ?? '',
-      proactive,
       media,
     },
   }

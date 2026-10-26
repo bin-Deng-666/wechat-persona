@@ -19,29 +19,44 @@ export interface ParsedCommand {
 
 /** 已知命令及其一句话说明。 */
 export const COMMANDS: readonly { name: string; usage: string; description: string }[] = [
-  { name: 'help', usage: '/help', description: '列出这些命令' },
-  { name: 'new', usage: '/new', description: '开一段新对话（旧记录保留，不再带上下文）' },
-  { name: 'status', usage: '/status', description: '当前人格、会话代次、上下文轮数' },
-  { name: 'persona', usage: '/persona [id]', description: '查看或切换这个聊天的人格' },
-  { name: 'style', usage: '/style [字数|sentence|paragraph|none|reset]', description: '看或改回答的分条方式' },
-  { name: 'stop', usage: '/stop', description: '打断正在跑的这一轮' },
-  { name: 'menu', usage: '/menu', description: '打开设置卡片（人格/模型/记忆/主动/分条）' },
-  { name: '表情', usage: '/表情 [收 名字]', description: '看表情库，或把对方刚发的图收进库里' },
+  { name: 'help', usage: '帮助', description: '列出这些命令' },
+  { name: 'new', usage: '新对话', description: '开一段新对话（旧记录保留，不再带上下文）' },
+  { name: 'status', usage: '状态', description: '当前人格、会话代次、上下文轮数' },
+  { name: 'persona', usage: '人格 [id]', description: '查看或切换这个聊天的人格' },
+  { name: 'style', usage: '分条 [字数|按句|按段|不切|恢复]', description: '看或改回答的分条方式' },
+  { name: 'stop', usage: '停止', description: '打断正在跑的这一轮' },
+  { name: 'menu', usage: '菜单 / 设置', description: '打开设置卡片（人格/模型/记忆/分条）' },
+  { name: '表情', usage: '表情 [收 名字|发 名字]', description: '看表情库、收藏或发送表情' },
 ]
+
+const CHINESE_COMMANDS: Record<string, string> = {
+  '菜单': 'menu', '设置': 'menu', '帮助': 'help', '新对话': 'new',
+  '状态': 'status', '人格': 'persona', '分条': 'style', '停止': 'stop', '表情': '表情',
+}
+const STYLE_ARGUMENTS: Record<string, string> = {
+  '按句': 'sentence', '按段': 'paragraph', '不切': 'none', '恢复': 'reset',
+}
 
 /**
  * 把一条消息解析成命令。
  * @param text - 消息原文。
- * @returns 以 `/` 开头且命令名合法时返回解析结果；否则 undefined（当普通消息处理）。
+ * @returns 整条消息是中文指令或斜杠命令时返回解析结果。
  */
 export function parseCommand(text: string): ParsedCommand | undefined {
   const trimmed = text.trim()
-  if (!trimmed.startsWith('/')) return undefined
-  const [head, ...rest] = trimmed.slice(1).split(/\s+/u)
-  const name = head?.toLowerCase() ?? ''
-  if (name === '') return undefined
-  // 未知命令也算命令：这样能回一句「没有这个命令」，而不是把它发给模型。
-  return { name, args: rest.filter(part => part !== '') }
+  const slash = trimmed.startsWith('/')
+  const [head = '', ...rest] = (slash ? trimmed.slice(1) : trimmed).split(/\s+/u)
+  const name = slash ? (CHINESE_COMMANDS[head] ?? head.toLowerCase()) : CHINESE_COMMANDS[head]
+  if (name === undefined || name === '') return undefined
+  const args = rest.filter(part => part !== '')
+  // 不带参数的中文指令必须独占整条消息；“菜单怎么设计”是正常聊天。
+  if (!slash && args.length > 0) {
+    if (name === 'persona' && (args.length !== 1 || !/^[a-z0-9-]{1,32}$/u.test(args[0]!))) return undefined
+    if (name === 'style' && (args.length !== 1 || !/^(?:\d+|按句|按段|不切|恢复|sentence|paragraph|none|reset)$/u.test(args[0]!))) return undefined
+    if (name === '表情' && !['收', '收下', '发', '发送'].includes(args[0]!)) return undefined
+    if (!['persona', 'style', '表情'].includes(name)) return undefined
+  }
+  return { name, args: name === 'style' ? args.map(arg => STYLE_ARGUMENTS[arg] ?? arg) : args }
 }
 
 /** `/help` 的回复。 */
@@ -51,7 +66,7 @@ export function formatHelp(): string {
 
 /** 未知命令的回复。 */
 export function formatUnknown(name: string): string {
-  return `没有 /${name} 这个命令。发 /help 看全部。`
+  return `没有 /${name} 这个命令。发“帮助”看全部。`
 }
 
 /** `/status` 的输入。 */
@@ -80,7 +95,7 @@ export function formatStatus(input: StatusInput): string {
     `权限：${input.permission}`,
   ]
   if (input.lastActive !== undefined) lines.push(`最近活跃：${input.lastActive}`)
-  lines.push('发 /new 开新对话，/persona 换人格。')
+  lines.push('发“新对话”重新开始，发“人格”换人格。')
   return lines.join('\n')
 }
 
@@ -98,7 +113,7 @@ export interface PersonaChoice {
 export function formatPersona(current: string, choices: readonly PersonaChoice[], switched?: PersonaChoice): string {
   if (switched !== undefined) return `已切到「${switched.name}」（${switched.id}），下一条消息生效。`
   const list = choices.map(choice => `${choice.id === current ? '→ ' : '  '}${choice.id} ${choice.name}`)
-  return ['可用人格：', ...list, '', '用 /persona <id> 切换。'].join('\n')
+  return ['可用人格：', ...list, '', '用“人格 <id>”切换，或发“菜单”选择。'].join('\n')
 }
 
 /** `/new` 的回复。 */
@@ -138,8 +153,8 @@ export function formatStyle(input: StyleInput): string {
     `分条：每条约 ${String(input.maxChars)} 字，按${
       input.split === 'sentence' ? '句子' : input.split === 'none' ? '不切' : '段落'
     }切（不超过 ${String(input.maxChars)} 字就一条发完）`,
-    `来源：${input.overridden ? '这个聊天的设置' : '人格卡'}（/style reset 恢复人格卡）`,
+    `来源：${input.overridden ? '这个聊天的设置' : '人格卡'}（“分条 恢复”恢复人格卡）`,
   ]
-  lines.push('调整：/style 160 改字数；/style sentence 按句切；/style none 不切。')
+  lines.push('调整：分条 160 改字数；分条 按句；分条 不切。')
   return lines.join('\n')
 }
