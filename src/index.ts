@@ -735,6 +735,9 @@ function boot(ctx: Context, config: ConfigShape): void {
   // 首次启动把内置默认人格落盘：否则 defaultPersona 指向一张不存在的卡，
   // 用户会看到「列表空着、但回复有人设」这种自相矛盾的状态。
   void seedDefaultPersona(join(dataDir, 'personas'))
+  // 表情目录先建好：没有目录时用户不知道该把图放哪，`/表情` 也只能说「空的」。
+  void mkdir(join(dataDir, 'stickers'), { recursive: true }).catch(() => {})
+  void mkdir(join(dataDir, 'stickers-inbox'), { recursive: true }).catch(() => {})
   const coordinator = new Coordinator(ctx, config, dataDir)
   coordinator.announceBoot(`cwd=${cwd} dataDir=${dataDir}`)
 

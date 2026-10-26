@@ -70,6 +70,17 @@ export function createMediaPreparer(
 
     const store = options.store
     if (store === undefined) {
+      // 没有附件服务也照样把图片旁路存一份：收表情不依赖模型能不能看图。
+      for (const item of media) {
+        if (item.kind !== 'image' || options.onImage === undefined) continue
+        try {
+          const bytes = await download(item)
+          const mediaType = sniffImageType(bytes)
+          if (mediaType !== undefined) await options.onImage({ data: bytes, mediaType, ...(peerId === undefined ? {} : { peerId }) })
+        } catch {
+          // 存不下就算了，正文还有说明文字。
+        }
+      }
       notes.push(`（收到${String(media.length)}个附件，但当前宿主没有附件服务，无法查看）`)
       return { parts, notes }
     }

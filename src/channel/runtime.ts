@@ -558,7 +558,8 @@ export class Channel {
         peer: peerId,
         text: pending.texts.join('\n'),
         first,
-        ...(first ? await this.stickerHint() : {}),
+        // 每轮都带表情名：库可能是会话开始后才填的。
+        ...(await this.stickerHint()),
         ...(memory === undefined ? {} : { memory }),
         ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }),
         ...(this.options.now === undefined ? {} : { now: new Date(this.options.now()) }),
@@ -741,10 +742,20 @@ export class Channel {
             : `收好了：${saved}。之后它会用 [表情:${name}] 发这张。`)
           return
         }
+        if (sub === '发' || sub === '发送') {
+          const name = normalizeStickerName(command.args.slice(1).join(' '))
+          if (name === undefined) {
+            reply('用法：/表情 发 名字')
+            return
+          }
+          const sent = await this.options.sendSticker?.(peerId, name, contextToken)
+          reply(sent === true ? `已发出「${name}」。` : `没发出去：表情库里没有「${name}」。发 /表情 看有哪些。`)
+          return
+        }
         const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
         reply(names.length === 0
-          ? '表情库是空的。把图片放进 stickers/ 目录，或先发图再说 /表情 收 名字。'
-          : `表情库（${String(names.length)} 张）：\n${names.join('、')}`)
+          ? '表情库是空的。把图片放进 stickers/ 目录（支持 png/jpg/gif/webp），或先发图再说「/表情 收 名字」。'
+          : `表情库（${String(names.length)} 张）：\n${names.join('、')}\n\n发 /表情 发 名字 可以直接发一张。`)
         return
       }
 

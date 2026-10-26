@@ -60,15 +60,23 @@ export function composeInboundText(input: ComposeInput): string {
     return `${PERSONA_BEGIN}\n${persona}\n${PERSONA_END}\n\n${body}`
   }
 
-  return `${reminderOf(input.card)}\n\n${body}`
+  return `${reminderOf(input.card, input.stickers)}\n\n${body}`
 }
 
 /**
  * 一行角色提醒。
+ *
+ * 表情名也跟着走：库是后来才填的、或者这个会话是在库空着的时候开的，
+ * 只在第一轮注入就会永远错过——那模型根本不知道有表情可发。
+ *
  * @param card - 人格卡。
+ * @param stickers - 本地表情库里的名字。
  */
-export function reminderOf(card: PersonaCard): string {
+export function reminderOf(card: PersonaCard, stickers?: readonly string[]): string {
   const style = card.prompt.style.slice(0, 2)
   const tail = style.length === 0 ? '' : `：${style.join('；')}`
-  return `（继续扮演「${card.name}」${tail}）`
+  const line = `（继续扮演「${card.name}」${tail}）`
+  const names = (stickers ?? []).map(name => name.trim()).filter(name => name !== '').slice(0, 12)
+  if (names.length === 0) return line
+  return `${line}\n（有表情可用：${names.join('、')}。想发就在回复末尾写 [表情:名字]，别解释它）`
 }
