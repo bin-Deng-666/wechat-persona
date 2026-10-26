@@ -84,6 +84,7 @@ describe('Channel.handle', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
     })
     return { channel, delivered, sent, emit }
   }
@@ -186,6 +187,7 @@ describe('Channel.run', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
     })
     await channel.run()
     assert.equal(delivered.length, 1)
@@ -210,6 +212,7 @@ describe('Channel 与 per-chat 设置', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       settings: { get: async () => ({ enabled: false, proactive: false }) } as never,
     })
     await channel.handle(userMessage())
@@ -238,6 +241,7 @@ describe('Channel 与 per-chat 设置', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       settings: { get: async () => ({ enabled: true, proactive: false, personaId: 'xiao-jing' }) } as never,
     })
     await channel.handle(userMessage())
@@ -259,6 +263,7 @@ describe('Channel 与 per-chat 设置', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       settings: { get: async () => ({ enabled: true, proactive: false, maxChars: 30 }) } as never,
     })
     await channel.handle(userMessage())
@@ -301,6 +306,7 @@ describe('主动搭话', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       now: () => options.now,
       settings: options.settings as never,
     })
@@ -316,7 +322,7 @@ describe('主动搭话', () => {
       now,
     })
     // 先让它有一次活动记录（2 小时前）。
-    ;(channel as unknown as { lastActivity: Map<string, number> }).lastActivity.set('wxid-owner', now - 2 * 60 * 60 * 1_000)
+    ;channel.markActive('wxid-owner', now - 2 * 60 * 60 * 1_000)
     const poked = await channel.poke('wxid-owner')
     assert.equal(poked, true)
   })
@@ -328,7 +334,7 @@ describe('主动搭话', () => {
       settings: { get: async () => ({ enabled: true, proactive: true }) },
       now,
     })
-    ;(channel as unknown as { lastActivity: Map<string, number> }).lastActivity.set('wxid-owner', now - 60_000)
+    ;channel.markActive('wxid-owner', now - 60_000)
     assert.equal(await channel.poke('wxid-owner'), false)
   })
 
@@ -339,7 +345,7 @@ describe('主动搭话', () => {
       settings: { get: async () => ({ enabled: true, proactive: false }) },
       now,
     })
-    ;(channel as unknown as { lastActivity: Map<string, number> }).lastActivity.set('wxid-owner', now - 5 * 60 * 60 * 1_000)
+    ;channel.markActive('wxid-owner', now - 5 * 60 * 60 * 1_000)
     assert.equal(await channel.poke('wxid-owner'), false)
   })
 
@@ -350,7 +356,7 @@ describe('主动搭话', () => {
       settings: { get: async () => ({ enabled: true, proactive: true }) },
       now,
     })
-    ;(channel as unknown as { lastActivity: Map<string, number> }).lastActivity.set('wxid-owner', now - 5 * 60 * 60 * 1_000)
+    ;channel.markActive('wxid-owner', now - 5 * 60 * 60 * 1_000)
     assert.equal(await channel.poke('wxid-owner'), false)
   })
 })
@@ -372,6 +378,7 @@ describe('回复里的表情标记', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       sendSticker,
     })
     return { channel, emit, sent }
@@ -426,6 +433,7 @@ describe('输入状态', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       typing: {
         start: async (peerId, token) => { started.push({ peerId, token }) },
         stop: async () => {},
@@ -466,6 +474,7 @@ describe('内置命令', () => {
       events,
       report: () => {},
       sleep: async () => {},
+      mergeWindowMs: 0,
       settings,
       generations,
       permissionLabel: 'danger-full-access',
@@ -533,5 +542,152 @@ describe('内置命令', () => {
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.equal(delivered.length, 0)
     assert.match(sent[0] ?? '', /没有 \/whatever/)
+  })
+})
+
+describe('连发合并与失败反馈', () => {
+  function setup(options: { mergeWindowMs?: number; progressAfterMs?: number } = {}) {
+    const { sessions, delivered } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: { peerId: string; text: string; token: string | undefined }[] = []
+    const replies = new ReplyQueue({
+      send: async (peerId, text, token) => { sent.push({ peerId, text, token }) },
+      sleep: async () => {},
+    })
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies,
+      events,
+      report: () => {},
+      sleep: async () => {},
+      mergeWindowMs: options.mergeWindowMs ?? 0,
+      // 测试里不要真的等 25 秒。
+      progressAfterMs: options.progressAfterMs ?? 0,
+    })
+    return { channel, delivered, sent, emit }
+  }
+
+  it('同一窗口里的几条消息合成一轮', async () => {
+    const { channel, delivered } = setup({ mergeWindowMs: 30 })
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '在吗' } }] }))
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '帮我看看桌面' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(delivered.length, 1, '两条消息应该只开一轮')
+    assert.match(delivered[0]?.text ?? '', /在吗/)
+    assert.match(delivered[0]?.text ?? '', /帮我看看桌面/)
+  })
+
+  it('窗口外的消息各成一轮', async () => {
+    const { channel, delivered } = setup({ mergeWindowMs: 10 })
+    await channel.handle(userMessage({ message_id: 'm1' }))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await channel.handle(userMessage({ message_id: 'm2' }))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal(delivered.length, 2)
+  })
+
+  it('一轮失败时回一句原因', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', {
+      type: 'turn/end',
+      data: { reason: { kind: 'error', error: { message: '模型返回了 400' } } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(sent.some(item => item.text.includes('模型返回了 400')), JSON.stringify(sent))
+  })
+
+  it('被前置条件挡下时说清楚（这不是等审批）', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'blocked' } } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(sent.some(item => item.text.includes('前置条件')))
+  })
+
+  it('长度截断时说清楚，而不是沉默', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(sent.some(item => item.text.includes('长度上限')))
+  })
+
+  it('跑太久会先回一句「还在弄」', async () => {
+    const { channel, sent } = setup({ progressAfterMs: 20 })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.ok(sent.some(item => item.text.includes('还在弄')), JSON.stringify(sent))
+  })
+
+  it('正常结束时不多嘴', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(sent.length, 0)
+  })
+})
+
+describe('交付文件', () => {
+  it('present 的文件会发到微信，相对路径按会话 cwd 补全', async () => {
+    const { sessions } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sentFiles: { peerId: string; paths: readonly string[]; token: string | undefined }[] = []
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      mergeWindowMs: 0,
+      progressAfterMs: 0,
+      cwd: '/work',
+      sendFiles: async (peerId, paths, token) => { sentFiles.push({ peerId, paths, token }) },
+    })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', {
+      type: 'deliverables/presented',
+      data: { files: [{ path: 'out/报告.docx' }, { path: '/abs/表格.xlsx' }, { nope: 1 }] },
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(sentFiles.length, 1)
+    assert.deepEqual(sentFiles[0]?.paths, ['/work/out/报告.docx', '/abs/表格.xlsx'])
+    assert.equal(sentFiles[0]?.token, 'ctx-1')
+  })
+
+  it('发送失败时回一句原因，而不是静默', async () => {
+    const { sessions } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: string[] = []
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      mergeWindowMs: 0,
+      progressAfterMs: 0,
+      sendFiles: async () => { throw new Error('文件太大') },
+    })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'deliverables/presented', data: { files: [{ path: '/a.docx' }] } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(sent.some(text => text.includes('文件太大')), JSON.stringify(sent))
   })
 })

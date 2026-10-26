@@ -31,6 +31,8 @@ export interface ComposeInput {
   timeZone?: string
   /** 记忆摘要。 */
   memory?: string
+  /** 本地表情库里的名字。 */
+  stickers?: readonly string[]
   /** 用户这一轮说的话（媒体消息是占位文本）。 */
   text: string
   /** 是否为本会话的第一轮。 */
@@ -52,6 +54,7 @@ export function composeInboundText(input: ComposeInput): string {
       ...(input.now === undefined ? {} : { now: input.now }),
       ...(input.timeZone === undefined ? {} : { timeZone: input.timeZone }),
       ...(input.memory === undefined ? {} : { memory: input.memory }),
+      ...(input.stickers === undefined ? {} : { stickers: input.stickers }),
     }
     const persona = buildSystemPrompt(input.card, context)
     return `${PERSONA_BEGIN}\n${persona}\n${PERSONA_END}\n\n${body}`

@@ -73,7 +73,7 @@ describe('ReplyQueue', () => {
 
   it('按顺序发出切分后的多条', async () => {
     const { sent, send } = sender()
-    const queue = new ReplyQueue({ send, sleep: noSleep, maxChars: 20 })
+    const queue = new ReplyQueue({ send, sleep: noSleep, plan: { softChars: 20, hardChars: 2_000, splitMode: 'paragraph', maxBubbles: 99, gapMs: 0 } })
     await queue.enqueue('p1', '第一段'.repeat(10) + '\n\n' + '第二段'.repeat(10), 'ctx')
     assert.ok(sent.length >= 2)
     assert.equal(sent[0]?.token, 'ctx')

@@ -23,6 +23,8 @@ export const COMMANDS: readonly { name: string; usage: string; description: stri
   { name: 'new', usage: '/new', description: '开一段新对话（旧记录保留，不再带上下文）' },
   { name: 'status', usage: '/status', description: '当前人格、会话代次、上下文轮数' },
   { name: 'persona', usage: '/persona [id]', description: '查看或切换这个聊天的人格' },
+  { name: 'style', usage: '/style [字数|sentence|paragraph|none|reset]', description: '看或改回答的分条方式' },
+  { name: 'stop', usage: '/stop', description: '打断正在跑的这一轮' },
 ]
 
 /**
@@ -113,4 +115,31 @@ export function formatAgo(ms: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${String(hours)} 小时前`
   return `${String(Math.floor(hours / 24))} 天前`
+}
+
+/** `/style` 的输入。 */
+export interface StyleInput {
+  /** 每条气泡的目标字数。 */
+  maxChars: number
+  /** 切分粒度。 */
+  split: 'paragraph' | 'sentence' | 'none'
+  /** 一次最多几条。 */
+  maxBubbles: number
+  /** 这些值是不是这个聊天自己的设置（否则来自人格卡）。 */
+  overridden: boolean
+}
+
+/**
+ * `/style` 的回显。
+ * @param input - 当前生效的发送形态。
+ */
+export function formatStyle(input: StyleInput): string {
+  const lines = [
+    `分条：最多 ${String(input.maxBubbles)} 条，每条约 ${String(input.maxChars)} 字，按${
+      input.split === 'sentence' ? '句子' : input.split === 'none' ? '不切' : '段落'
+    }切`,
+    `来源：${input.overridden ? '这个聊天的设置' : '人格卡'}（/style reset 恢复人格卡）`,
+  ]
+  lines.push('调整：/style 160 改字数；/style sentence 按句切；/style none 不切。')
+  return lines.join('\n')
 }

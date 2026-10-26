@@ -97,8 +97,29 @@ npm run login                      # 可加 --png /tmp/qr.png 把二维码写成
 | `/status` | 当前人格、第几段对话、累计消息数、权限档位 |
 | `/persona` | 列出人格卡（→ 标当前） |
 | `/persona <id>` | 切换这个聊天的人格（立即生效） |
+| `/style` | 看当前分条方式（几条、每条约多少字、来源） |
+| `/style 160` | 每条气泡最多 160 字 |
+| `/style sentence` / `paragraph` / `none` | 按句切 / 按段切 / 不切 |
+| `/style reset` | 丢掉聊天设置，回到人格卡的值 |
+| `/stop` | 打断正在跑的这一轮（排队中的消息一起丢掉） |
 
 命令不会发给模型；回复走和普通回复同一条队列（限流/切分/失败提示都复用）。
+
+## 它在微信里怎么说话
+
+| 行为 | 规则 | 想改怎么办 |
+|---|---|---|
+| 分条 | 按人格卡的 `reply.maxChars`（默认 120 字）切，最多 4 条，条间隔 1.2 秒 | `/style 160`、`/style sentence`、`/style reset` |
+| 连发合并 | 700 毫秒内的几条消息合并成一轮，不会一问三答 | 改 `mergeWindowMs`（代码默认值） |
+| 长任务 | 超过 25 秒没输出先回一句「还在弄」 | 改 `progressAfterMs` |
+| 失败 | 模型报错、被截断、被中断都会回一句原因，不静默 | — |
+| 文件 | 模型用 `present` 交付的文件（docx/pdf/zip）直接发到微信 | 单个文件上限 100 MB |
+| 审批 | 会话权限为 `ask` 时，把「要执行什么」发到微信，回 `1` 允许 / `2` 拒绝 / `3` 取消 | 见下面的权限说明 |
+| 主动 | 安静够久且不在免打扰时段才开口；活跃时间落盘，重启照样算 | 人格卡 `proactive` + 每聊天开关 |
+
+> 审批只有在权限档位不是 `danger-full-access` 时才会触发：那一档的审批策略是 `never`，
+> 服务端直接放行，根本不会问。想用微信审批，把 `cordis.patch.yml` 里的
+> `permission` 改成 `workspace-write`。
 
 ## 配置（桌面版目前靠文件）
 
@@ -107,9 +128,10 @@ npm run login                      # 可加 --png /tmp/qr.png 把二维码写成
 ├── account.json                登录凭据（0600；删掉 = 退出登录）
 ├── cursor.json                 每个账号的轮询游标（重启不重放）
 ├── generations.json            每个聊天的对话代次（/new 用）
+├── last-seen.json              每个聊天最后说话的时间（主动搭话用，重启不丢）
 ├── logs/plugin-YYYY-MM-DD.log  插件诊断日志，出问题先看这里
 ├── personas/<id>/persona.json  人格卡（docs/persona.md）
-├── chats/<peer>/settings.json  每聊天：人格 / 是否回复 / 长度上限 / 是否主动
+├── chats/<peer>/settings.json  每聊天：人格 / 是否回复 / 长度上限 / 切分粒度 / 是否主动
 └── stickers/<名字>.png|gif     表情库；回复里写 [表情:名字] 就发这张
 ```
 

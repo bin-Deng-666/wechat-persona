@@ -21,6 +21,8 @@ export interface PromptContext {
   timeZone?: string
   /** 记忆摘要；空则不渲染该行。 */
   memory?: string
+  /** 本地表情库里的名字；空则不渲染表情段（没有库时模型写标记只会退化成文字）。 */
+  stickers?: readonly string[]
 }
 
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const
@@ -90,6 +92,12 @@ export function buildSystemPrompt(card: PersonaCard, context: PromptContext = {}
   blocks.push(`# 此刻\n${situation.join('')}`)
 
   blocks.push(`# 长度\n一般不超过 ${String(card.reply.maxChars)} 字；除非对方明确要求展开，否则别长篇大论。`)
+
+  const stickers = (context.stickers ?? []).filter(name => name.trim() !== '')
+  if (stickers.length > 0) {
+    // 名字必须来自这个列表：模型编一个名字，通道找不到文件就退化成文字，等于白发。
+    blocks.push(`# 表情\n想发表情时，在回复最后单独写 [表情:名字]，名字只能从这些里选：${stickers.join('、')}。不要解释这个标记，也不要每句都发。`)
+  }
 
   if (card.examples.length > 0) {
     const lines = card.examples.map(example => `对方：${example.user}\n你：${example.assistant}`)

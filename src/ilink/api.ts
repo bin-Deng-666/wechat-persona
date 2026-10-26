@@ -148,6 +148,26 @@ export interface SendImageParams extends RequestOptions {
   contextToken?: string
 }
 
+export interface SendFileParams extends RequestOptions {
+  token: string
+  to: string
+  /** CDN 返回的下载参数。 */
+  encryptQueryParam: string
+  /**
+   * AES key 的 base64。
+   *
+   * 文件与图片的拼法不同：图片是「16 字节原样」的 base64，文件参考实现发的是
+   * 「32 位 hex 字符串」的 base64。解码端两种都认，但发送端各写各的，别互换。
+   */
+  aesKeyBase64: string
+  /** 接收方看到的文件名。 */
+  fileName: string
+  /** 明文长度（十进制字符串，协议避免浮点）。 */
+  plaintextSize: number
+  /** 本轮回传的会话令牌。 */
+  contextToken?: string
+}
+
 export interface GetUploadUrlParams extends RequestOptions {
   token: string
   /** CDN 上的对象名。 */
@@ -191,6 +211,8 @@ export interface ApiClient {
   sendText(params: SendTextParams): Promise<void>
   /** 发一张图片（图片需先上传到 CDN）。 */
   sendImage(params: SendImageParams): Promise<void>
+  /** 发一个文件（文件需先上传到 CDN）。 */
+  sendFile(params: SendFileParams): Promise<void>
   /** 申请一个上传地址与元数据。 */
   getUploadUrl(params: GetUploadUrlParams): Promise<GetUploadUrlResult>
   /** 取某个用户的 typing ticket（空串表示服务端没给）。 */
@@ -379,6 +401,44 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
       const code = parsed.errcode ?? parsed.ret
       if (typeof code === 'number' && code !== 0) throw new BusinessError('sendmessage(image)', code, parsed.errmsg ?? '')
+    },
+
+    async sendFile(params) {
+      const msg: Record<string, unknown> = {
+        from_user_id: '',
+        to_user_id: params.to,
+        client_id: randomUUID(),
+        message_type: 2,
+        message_state: 2,
+        item_list: [{
+          // 消息项里文件是 4（与 getuploadurl 的 media_type=3 是两套编号）。
+          type: 4,
+          file_item: {
+            media: {
+              encrypt_query_param: params.encryptQueryParam,
+              aes_key: params.aesKeyBase64,
+              encrypt_type: 1,
+            },
+            file_name: params.fileName,
+            // 明文长度：服务端显示「12.3 KB」用这个，不是密文长度。
+            len: String(params.plaintextSize),
+          },
+        }],
+      }
+      if (params.contextToken !== undefined) msg['context_token'] = params.contextToken
+
+      const raw = await client.post({
+        ...params,
+        body: JSON.stringify({
+          msg,
+          base_info: buildBaseInfo({ channelVersion, ...(botAgent === undefined ? {} : { botAgent }) }),
+        }),
+        endpoint: 'ilink/bot/sendmessage',
+        label: 'sendmessage(file)',
+      })
+      const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
+      const code = parsed.errcode ?? parsed.ret
+      if (typeof code === 'number' && code !== 0) throw new BusinessError('sendmessage(file)', code, parsed.errmsg ?? '')
     },
 
     async getConfig(params) {

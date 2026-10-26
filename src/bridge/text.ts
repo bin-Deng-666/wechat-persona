@@ -36,6 +36,41 @@ function hardCut(text: string, maxChars: number): string[] {
 }
 
 /**
+ * 把一堆单元按上限打包成片段。
+ *
+ * 超长单元优先在句子边界上切，只有一句话本身超过上限时才硬切——
+ * 按字数硬切中文会把词切开，读起来像乱码。
+ */
+function pack(units: readonly string[], maxChars: number, separator: string): string[] {
+  const out: string[] = []
+  let current = ''
+
+  const flush = (): void => {
+    if (current.trim() !== '') out.push(current.trim())
+    current = ''
+  }
+
+  for (const unit of units) {
+    if (unit.length > maxChars) {
+      flush()
+      const inner = sentences(unit)
+      if (inner.length <= 1) out.push(...hardCut(unit, maxChars))
+      else out.push(...pack(inner, maxChars, ''))
+      continue
+    }
+    const candidate = current === '' ? unit : `${current}${separator}${unit}`
+    if (candidate.length > maxChars) {
+      flush()
+      current = unit
+      continue
+    }
+    current = candidate
+  }
+  flush()
+  return out
+}
+
+/**
  * 切分一条回复。
  *
  * @param text - 原始回复。
@@ -49,32 +84,7 @@ export function splitText(text: string, maxChars: number, mode: SplitMode = 'par
   if (mode === 'none' || maxChars <= 0 || trimmed.length <= maxChars) return [trimmed]
 
   const units = mode === 'sentence' ? sentences(trimmed) : paragraphs(trimmed)
-  const chunks: string[] = []
-  let current = ''
-
-  const flush = (): void => {
-    if (current.trim() !== '') chunks.push(current.trim())
-    current = ''
-  }
-
-  for (const unit of units) {
-    // 单个单元就超过上限：先把它自己切碎，再按普通单元处理。
-    if (unit.length > maxChars) {
-      flush()
-      for (const piece of hardCut(unit, maxChars)) chunks.push(piece)
-      continue
-    }
-    const candidate = current === '' ? unit : `${current}\n\n${unit}`
-    if (candidate.length > maxChars) {
-      flush()
-      current = unit
-      continue
-    }
-    current = candidate
-  }
-  flush()
-
-  return balanceFences(chunks)
+  return balanceFences(pack(units, maxChars, mode === 'sentence' ? '' : '\n\n'))
 }
 /**
  * 保证跨片段时每个片段的代码块都闭合。

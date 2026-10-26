@@ -19,6 +19,8 @@ export interface ChatSettings {
   enabled: boolean
   /** 单条回复的字数上限；undefined 表示用卡片自己的值。 */
   maxChars?: number
+  /** 切分粒度；undefined 表示用卡片自己的值。 */
+  split?: 'paragraph' | 'sentence' | 'none'
   /** 是否允许主动搭话。 */
   proactive: boolean
 }
@@ -51,6 +53,9 @@ export function parseChatSettings(raw: unknown): ChatSettings {
   if (typeof maxChars === 'number' && Number.isFinite(maxChars)) {
     settings.maxChars = Math.round(Math.min(MAX_CHARS_RANGE.max, Math.max(MAX_CHARS_RANGE.min, maxChars)))
   }
+
+  const split = raw['split']
+  if (split === 'paragraph' || split === 'sentence' || split === 'none') settings.split = split
 
   return settings
 }

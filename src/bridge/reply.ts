@@ -12,7 +12,7 @@
  * @module wechat-persona/bridge/reply
  */
 
-import { splitText, type SplitMode } from './text.ts'
+import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
 
 /** 服务端用来要求「慢一点」的返回码。 */
 export const THROTTLE_CODE = -2
@@ -86,10 +86,17 @@ export interface ReplyQueueOptions {
   retryDelayMs?: number
   /** 同一 peer 两次发送的最小间隔，毫秒。 */
   minIntervalMs?: number
-  /** 切成几条发，单条上限。 */
-  maxChars?: number
-  /** 切分粒度。 */
-  splitMode?: SplitMode
+  /** 默认发送形态；单条可以覆盖。 */
+  plan?: ReplyPlan
+  /**
+   * 每个气泡发出之前的回调。
+   *
+   * 用来重报「对方正在输入」：微信每收到一条消息就把输入状态清掉，
+   * 多气泡之间不重报的话，用户会看到「正在输入」闪一下再消失。
+   */
+  onChunk?: (peerId: string, index: number, total: number) => void
+  /** 某个 peer 的队列排空（发完或放弃）时回调；用来收「正在输入」。 */
+  onDrain?: (peerId: string) => void
   /** 测试注入的 sleep。 */
   sleep?: (ms: number) => Promise<void>
   /** 测试注入的时钟。 */
@@ -100,8 +107,8 @@ interface Queued {
   peerId: string
   text: string
   contextToken: string | undefined
-  /** 这个聊天的长度上限；undefined 用队列默认值。 */
-  maxChars?: number
+  /** 这一条的发送形态；undefined 用队列默认值。 */
+  plan?: ReplyPlan
 }
 
 /**
@@ -123,13 +130,26 @@ export class ReplyQueue {
    * 入队一条回复。返回的 Promise 在这条回复彻底结束（发出或放弃）后 settle，
    * 不会因重试而 reject。
    */
-  enqueue(peerId: string, text: string, contextToken?: string, maxChars?: number): Promise<void> {
+  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan): Promise<void> {
     const queue = this.queues.get(peerId) ?? []
-    queue.push({ peerId, text, contextToken, ...(maxChars === undefined ? {} : { maxChars }) })
+    queue.push({ peerId, text, contextToken, ...(plan === undefined ? {} : { plan }) })
     this.queues.set(peerId, queue)
+    return this.ensureDrain(peerId)
+  }
+
+  /**
+   * 确保这个 peer 有一条在跑的 drain。
+   *
+   * `running` 的删除和 drain 结束之间有一个微任务窗口，正好落在里面入队的消息
+   * 会被 push 进去却没人处理——所以删除后再看一眼队列。
+   */
+  private ensureDrain(peerId: string): Promise<void> {
     const existing = this.running.get(peerId)
     if (existing !== undefined) return existing
-    const run = this.drain(peerId).finally(() => { this.running.delete(peerId) })
+    const run = this.drain(peerId).finally(() => {
+      this.running.delete(peerId)
+      if ((this.queues.get(peerId)?.length ?? 0) > 0) void this.ensureDrain(peerId)
+    })
     this.running.set(peerId, run)
     return run
   }
@@ -147,14 +167,19 @@ export class ReplyQueue {
   }
 
   private async drain(peerId: string): Promise<void> {
-    for (;;) {
-      const queue = this.queues.get(peerId)
-      const next = queue?.shift()
-      if (next === undefined) {
-        this.queues.delete(peerId)
-        return
+    try {
+      for (;;) {
+        const queue = this.queues.get(peerId)
+        const next = queue?.shift()
+        if (next === undefined) {
+          this.queues.delete(peerId)
+          return
+        }
+        await this.deliver(next)
       }
-      await this.deliver(next)
+    } finally {
+      // 队列空了就收「正在输入」；如果这之间又进来一条，新的一轮 drain 会重新开始上报。
+      this.options.onDrain?.(peerId)
     }
   }
 
@@ -162,11 +187,15 @@ export class ReplyQueue {
     const sleep = this.options.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)) })
     const maxAttempts = this.options.maxAttempts ?? 3
     const maxThrottle = this.options.maxThrottleAttempts ?? 5
-    const chunks = splitText(item.text, item.maxChars ?? this.options.maxChars ?? 2_000, this.options.splitMode ?? 'paragraph')
+    const plan = item.plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
+    const bubbles = planBubbles(item.text, plan)
     let throttleCount = 0
     let attempt = 0
 
-    for (const chunk of chunks) {
+    for (const [index, chunk] of bubbles.entries()) {
+      // 第二条起先等一个「人打字」的间隔：几条同时出现像刷屏，完全不留白又像卡了。
+      if (index > 0) await sleep(plan.gapMs)
+      this.options.onChunk?.(item.peerId, index, bubbles.length)
       for (;;) {
         await this.pace(item.peerId, sleep)
         try {

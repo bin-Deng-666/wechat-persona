@@ -11,6 +11,7 @@ import {
   formatNewChat,
   formatPersona,
   formatStatus,
+  formatStyle,
   formatUnknown,
   parseCommand,
 } from '../src/channel/commands.ts'
@@ -70,5 +71,21 @@ describe('文案', () => {
     assert.equal(formatAgo(5 * 60_000), '5 分钟前')
     assert.equal(formatAgo(3 * 3_600_000), '3 小时前')
     assert.equal(formatAgo(2 * 86_400_000), '2 天前')
+  })
+})
+
+describe('formatStyle', () => {
+  it('说明当前分条方式与来源', () => {
+    const text = formatStyle({ maxChars: 120, split: 'sentence', maxBubbles: 4, overridden: false })
+    assert.match(text, /最多 4 条/)
+    assert.match(text, /120 字/)
+    assert.match(text, /按句子切/)
+    assert.match(text, /人格卡/)
+  })
+
+  it('聊天设置覆盖时点明来源', () => {
+    const text = formatStyle({ maxChars: 300, split: 'none', maxBubbles: 4, overridden: true })
+    assert.match(text, /不切/)
+    assert.match(text, /这个聊天的设置/)
   })
 })

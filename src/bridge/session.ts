@@ -32,6 +32,15 @@ export interface AgentHandleLike {
     readonly id: SessionId
     /** 把一条消息排成下一轮并唤醒循环。 */
     followup(message: never): void
+    /** 当前是否在跑一轮，GUI 的停止按钮看的也是它。 */
+    readonly status?: 'idle' | 'running'
+    /**
+     * 打断当前这一轮。
+     *
+     * `keepInbox` 为 false（默认）时连排队未处理的消息一起丢掉；
+     * 微信里用户说「停」通常意味着「现在这些都不要了」，所以用默认值。
+     */
+    cancel?(cause: { kind: 'user' }, options?: { keepInbox?: boolean }): void
     /**
      * 持久化会话对象；真实 registry 会给，测试里的结构化句柄可能没有。
      * 权限预设只能记在它上面。
@@ -169,6 +178,27 @@ export class PeerSessions {
     }
     const handle = await this.acquire(peerId, generation)
     handle.agent.followup(message)
+  }
+
+  /**
+   * 打断某个 peer 正在跑的一轮。
+   *
+   * 返回 false 表示「没有可打断的」：没有句柄、agent 没暴露 cancel、
+   * 或者它本来就不在跑。三种情况对用户都是同一句话，不必区分。
+   */
+  async cancel(peerId: string, generation = 0): Promise<boolean> {
+    const handle = this.live.get(`${peerId}#${String(generation)}`)
+    if (handle === undefined) return false
+    const agent = handle.agent
+    if (agent.cancel === undefined) return false
+    if (agent.status !== undefined && agent.status !== 'running') return false
+    try {
+      agent.cancel({ kind: 'user' })
+      return true
+    } catch (error) {
+      this.options.onError?.(error, peerId)
+      return false
+    }
   }
 
   /** 释放一个 peer 的句柄（不 dispose 借用的）。 */

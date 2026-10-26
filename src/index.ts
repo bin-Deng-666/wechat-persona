@@ -8,8 +8,8 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { isAbsolute, join, resolve } from 'node:path'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { basename, isAbsolute, join, resolve } from 'node:path'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { watch, type FSWatcher } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -23,11 +23,14 @@ import { PersonaStore, seedDefaultPersona } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
 import { StickerLibrary } from './persona/stickers.ts'
 import { sendImage } from './ilink/send-image.ts'
+import { sendFile } from './ilink/send-file.ts'
 import { createAccessPolicy } from './bridge/access.ts'
+import { ApprovalBridge } from './bridge/approval.ts'
+import { PeerActivity } from './bridge/activity.ts'
 import { ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
 import type { MessageItem } from './ilink/types.ts'
-import { PeerSessions, type AgentHandleLike, type AgentRegistryLike } from './bridge/session.ts'
+import { PeerSessions, SESSION_ID_PREFIX, type AgentHandleLike, type AgentRegistryLike } from './bridge/session.ts'
 import { PeerGenerations } from './bridge/generations.ts'
 import { Channel } from './channel/runtime.ts'
 import { TypingIndicator } from './channel/typing.ts'
@@ -54,6 +57,9 @@ export const name = 'persona-wechat'
 /** 本构建声明的版本，进 `channel_version` 头。 */
 const CHANNEL_VERSION = '0.1.0'
 
+/** 单个出站文件的上限：整份文件一次性读进内存，再大就会把进程拖垮。 */
+const MAX_SEND_FILE_BYTES = 100 * 1024 * 1024
+
 /** iLink 的登录基址；确认后服务端会给出后续 baseurl。 */
 const LOGIN_BASE_URL = 'https://ilinkai.weixin.qq.com'
 
@@ -71,6 +77,17 @@ interface ConnectionLike {
 
 /** `ctx.agents` 的注册面。 */
 type AgentsLike = AgentRegistryLike
+
+/** 审批结论；与 DSH 的 `ApprovalOutcome` 对齐。 */
+export type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+/** `approval/request` waterfall 的请求形状（只取用得到的字段）。 */
+interface ApprovalRequestLike {
+  agent: { id: unknown }
+  toolName: string
+  reason?: string
+  displayReason?: Record<string, string>
+}
 
 /** `ctx.sessionPersistence` 里我们用到的部分。 */
 interface PersistenceLike {
@@ -107,6 +124,7 @@ export class Coordinator {
   private readonly chatSettings: ChatSettingsStore
   private readonly stickers: StickerLibrary
   private readonly generations: PeerGenerations
+  private readonly activity: PeerActivity
   private readonly fileLog: FileLogger
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
@@ -114,6 +132,7 @@ export class Coordinator {
   private accountWatcher: FSWatcher | undefined
   private account: StoredAccount | undefined
   private run: Channel | undefined
+  private approvals: ApprovalBridge | undefined
   private starting = false
   private readonly login: LoginSession
 
@@ -134,6 +153,8 @@ export class Coordinator {
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
     this.generations = new PeerGenerations(join(dataDir, 'generations.json'))
+    // 活跃时间要落盘：否则重启后「安静了多久」归零，主动搭话再也不会触发。
+    this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
     this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
@@ -211,6 +232,31 @@ export class Coordinator {
     })
     this.report('微信已连接', { accountId: credentials.accountId })
     await this.startRun()
+  }
+
+  /**
+   * 审批 waterfall 的答复者。
+   *
+   * 只认本通道造的会话；其余交回 `next()`（GUI 的审批卡）。
+   * 返回 `unavailable` 会让这一步失败，所以只有真的问不到人时才这样。
+   */
+  async answerApproval(
+    request: { agent: { id: unknown }; toolName: string; reason?: string; displayReason?: Record<string, string> },
+    next: () => Promise<ApprovalOutcome>,
+  ): Promise<ApprovalOutcome> {
+    const sessionId = String(request.agent?.id ?? '')
+    if (!sessionId.startsWith(SESSION_ID_PREFIX)) return await next()
+    const peerId = this.run?.peerForSession(sessionId)
+    if (peerId === undefined || this.approvals === undefined) return await next()
+
+    const reason = request.displayReason?.['zh'] ?? request.reason
+    const answer = await this.approvals.request({
+      peerId,
+      toolName: request.toolName,
+      ...(reason === undefined ? {} : { reason }),
+    })
+    this.report('审批已答复', { peerId, toolName: request.toolName, answer })
+    return answer === 'allow' ? 'allowed-once' : answer === 'deny' ? 'rejected' : 'cancelled'
   }
 
   /** 退出登录：停轮询、删凭据、复位面板。 */
@@ -386,21 +432,20 @@ export class Coordinator {
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
       const replies = new ReplyQueue({
         send: async (peerId, text, contextToken) => {
-          try {
-            await api.sendText({
-              baseUrl: account.baseUrl,
-              endpoint: 'ilink/bot/sendmessage',
-              label: 'sendmessage',
-              token: account.botToken,
-              to: peerId,
-              text,
-              ...(contextToken === undefined ? {} : { contextToken }),
-            })
-          } finally {
-            // 成功要收尾，失败也要——否则手机那头会一直显示「对方正在输入」。
-            void typing.stop(peerId)
-          }
+          await api.sendText({
+            baseUrl: account.baseUrl,
+            endpoint: 'ilink/bot/sendmessage',
+            label: 'sendmessage',
+            token: account.botToken,
+            to: peerId,
+            text,
+            ...(contextToken === undefined ? {} : { contextToken }),
+          })
         },
+        // 每发一条，微信都会把「正在输入」清掉；多气泡之间重报一次，读起来才连贯。
+        onChunk: peerId => { void typing.start(peerId) },
+        // 一条回复（可能好几个气泡）彻底发完才收尾——否则气泡之间会一闪一闪。
+        onDrain: peerId => { void typing.stop(peerId) },
         onGiveUp: (peerId, text, error) => {
           this.report('回复最终失败', { peerId, chars: text.length, error: String(error) })
           // 用户在微信那头只会看到「没回复」。给一句明确的话，比无限等待好。
@@ -413,8 +458,8 @@ export class Coordinator {
             text: '（这条没能发出去，可能是网络或限流，稍后再试一次）',
           }).catch(() => {})
         },
-        maxChars: 2_000,
-        minIntervalMs: 2_000,
+        // 1 秒是「同一条回复的相邻气泡」的节奏；真正的限流由 ret:-2 的退避兜住。
+        minIntervalMs: 1_000,
       })
 
       const channel = new Channel({
@@ -427,6 +472,12 @@ export class Coordinator {
         settings: this.chatSettings,
         generations: this.generations,
         permissionLabel: preset,
+        activity: this.activity,
+        cwd: this.config.cwd.get(),
+        sendFiles: async (peerId, paths, contextToken) => {
+          for (const path of paths) await this.sendFile(peerId, path, contextToken)
+        },
+        stickerNames: async () => await this.stickers.names(),
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
         replies,
@@ -441,6 +492,15 @@ export class Coordinator {
         },
         ...(this.mediaPreparer() === undefined ? {} : { prepareMedia: this.mediaPreparer()! }),
       })
+      // 审批桥：把「要不要执行」发到微信，等一句 1/2。
+      // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。
+      const approvals = new ApprovalBridge({
+        ask: async (peerId, text) => { await replies.enqueue(peerId, text, channel.contextTokenFor(peerId)) },
+        report: this.report,
+      })
+      this.approvals = approvals
+      channel.setApprovals(approvals)
+
       const cursor = await this.readCursor(account.accountId)
       this.run = channel
       this.report(`开始轮询（账号 ${account.accountId}）`)
@@ -520,6 +580,30 @@ export class Coordinator {
     }
   }
 
+  /**
+   * 把一个本地文件发进微信。
+   *
+   * 上限 100 MiB：协议本身没写限制，但整份文件是一次性读进内存、一次性 POST 的，
+   * 更大的文件在这个实现里只会把进程拖垮。宁可回一句「太大了」。
+   */
+  private async sendFile(peerId: string, path: string, contextToken: string | undefined): Promise<void> {
+    if (this.account === undefined) throw new Error('还没登录')
+    const size = (await stat(path)).size
+    if (size > MAX_SEND_FILE_BYTES) {
+      throw new Error(`${basename(path)} 有 ${(size / 1024 / 1024).toFixed(1)} MB，超过 100 MB 发不了`)
+    }
+    const data = await readFile(path)
+    await sendFile({
+      api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
+      baseUrl: this.account.baseUrl,
+      token: this.account.botToken,
+      to: peerId,
+      data,
+      fileName: basename(path),
+      ...(contextToken === undefined ? {} : { contextToken }),
+    })
+  }
+
   /** 发一张本地表情：找到文件、读出来、走图片发送。 */
   private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined): Promise<boolean> {
     if (this.account === undefined) return false
@@ -591,6 +675,7 @@ export class Coordinator {
   async dispose(): Promise<void> {
     this.accountWatcher?.close()
     this.accountWatcher = undefined
+    this.approvals?.cancelAll()
     await this.stopRun()
   }
 }
@@ -632,6 +717,25 @@ function boot(ctx: Context, config: ConfigShape): void {
       injected.logger(name).warn(`恢复登录失败：${String(error)}`)
     })
     injected.effect(() => () => { void coordinator.dispose() })
+  })
+
+  // 审批半边：本通道的会话要问就发到微信，其余（GUI 开的会话）交给别人。
+  void ctx.inject(['agents'], injected => {
+    const events = injected as unknown as {
+      on?: (
+        name: 'approval/request',
+        listener: (request: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>) => Promise<ApprovalOutcome>,
+        options?: { prepend?: boolean },
+      ) => () => void
+    }
+    // 精简宿主（测试、headless 组合）可能没有事件总线：没有就不转发审批。
+    if (events.on === undefined) return
+    injected.effect(() => events.on!(
+      'approval/request',
+      async (request, next) => await coordinator.answerApproval(request, next),
+      // 抢在 GUI 的审批卡前面：投到微信的是「本通道的会话」，不该同时弹桌面卡片。
+      { prepend: true },
+    ))
   })
 
   // 面板半边：只有能提供浏览器路由的宿主才挂。
