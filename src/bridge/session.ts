@@ -46,7 +46,8 @@ export interface AgentRegistryLike {
   create(options: {
     sessionId: SessionId
     agentOptions?: { provider?: string; model?: string }
-    meta?: { cwd?: string }
+    meta?: { cwd?: string; agentPreset?: string }
+    setup?: AgentSetupLike
     signal?: AbortSignal
   }): Promise<AgentHandleLike>
   resume(options: {
@@ -56,6 +57,14 @@ export interface AgentRegistryLike {
   get(sessionId: SessionId): { readonly id: SessionId } | undefined
 }
 
+/**
+ * 创建/恢复会话时组合其「作用域世界」（preset、工具等）的回调。
+ *
+ * web app 把面向模型的工具行都藏在 agent preset 后面：不挂 preset 的会话几乎没有工具，
+ * 模型会退化成只会说话。这是最容易漏、又最像「它不肯干活」的故障。
+ */
+export type AgentSetupLike = (agentCtx: unknown, agent: unknown) => void | Promise<void>
+
 export interface PeerSessionsOptions {
   registry: AgentRegistryLike
   /** 新建会话记录的工作目录（绝对路径，创建后不可改）。 */
@@ -64,6 +73,10 @@ export interface PeerSessionsOptions {
   sessionOptions?: { provider?: string; model?: string }
   /** 探测持久化会话是否已存在；缺省视为不存在。 */
   sessionExists?: (sessionId: SessionId) => Promise<boolean>
+  /** 组合会话作用域世界（挂 preset）；缺省则不挂。 */
+  setup?: AgentSetupLike
+  /** 新建会话时写进 header 的 preset id，供以后 resume 复原同一套工具。 */
+  agentPreset?: string
   /** 诊断出口。 */
   onError?: (error: unknown, peerId: string) => void
   /**
@@ -111,11 +124,20 @@ export class PeerSessions {
 
     const options = this.options.sessionOptions === undefined ? {} : { agentOptions: this.options.sessionOptions }
     let handle: AgentHandleLike
+    const setup = this.options.setup === undefined ? {} : { setup: this.options.setup }
     if ((await this.options.sessionExists?.(sessionId)) === true) {
-      handle = await registry.resume({ resumeSessionId: sessionId, ...options })
+      handle = await registry.resume({ resumeSessionId: sessionId, ...options, ...setup })
     } else {
       try {
-        handle = await registry.create({ sessionId, meta: { cwd: this.options.cwd }, ...options })
+        handle = await registry.create({
+          sessionId,
+          meta: {
+            cwd: this.options.cwd,
+            ...(this.options.agentPreset === undefined ? {} : { agentPreset: this.options.agentPreset }),
+          },
+          ...options,
+          ...setup,
+        })
       } catch (error) {
         // 竞态：并发拿到同一个 peer 时 `create` 会因 id 已存在而抛。再 `get` 一次。
         const raced = registry.get(sessionId)

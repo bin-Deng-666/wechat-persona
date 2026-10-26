@@ -154,3 +154,47 @@ describe('会话句柄回调', () => {
     assert.deepEqual(seen, [sessionIdFor('u1')])
   })
 })
+
+
+describe('preset 挂载', () => {
+  it('create 带上 setup 与 agentPreset', async () => {
+    const calls: { meta?: unknown; setup?: unknown }[] = []
+    const registry: AgentRegistryLike = {
+      create: async options => {
+        calls.push({ meta: options.meta, setup: options.setup })
+        const agent = { id: options.sessionId, followup: () => {} }
+        return { agent: agent as never, dispose: async () => {} }
+      },
+      resume: async () => { throw new Error('不该走 resume') },
+      get: () => undefined,
+    }
+    const mounted: string[] = []
+    const sessions = new PeerSessions({
+      registry,
+      cwd: '/tmp/work',
+      agentPreset: 'default',
+      setup: async (_agentCtx, agent) => { mounted.push((agent as { session: { header: { agentPreset: string } } }).session.header.agentPreset) },
+    })
+    await sessions.acquire('u1')
+    assert.deepEqual(calls[0]?.meta, { cwd: '/tmp/work', agentPreset: 'default' })
+    assert.equal(typeof calls[0]?.setup, 'function')
+    // 调用一次 setup，确认它按 header 里的 preset 去挂
+    await (calls[0]?.setup as (ctx: unknown, agent: unknown) => Promise<void>)({}, { session: { header: { agentPreset: 'default' } } })
+    assert.deepEqual(mounted, ['default'])
+  })
+
+  it('resume 也带 setup（旧会话补挂 preset）', async () => {
+    let setupSeen: unknown
+    const registry: AgentRegistryLike = {
+      create: async () => { throw new Error('不该走 create') },
+      resume: async options => {
+        setupSeen = options.setup
+        return { agent: { id: options.resumeSessionId, followup: () => {} } as never, dispose: async () => {} }
+      },
+      get: () => undefined,
+    }
+    const sessions = new PeerSessions({ registry, cwd: '/tmp/work', sessionExists: async () => true, setup: async () => {} })
+    await sessions.acquire('u1')
+    assert.equal(typeof setupSeen, 'function')
+  })
+})

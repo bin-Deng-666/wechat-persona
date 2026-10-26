@@ -76,6 +76,16 @@ interface PersistenceLike {
   stat: (id: string, options?: { signal?: AbortSignal }) => Promise<unknown>
 }
 
+/**
+ * `ctx.agentPresets` 里我们用到的部分。
+ *
+ * 结构化声明而非导入：headless 等组合没有 preset 注册表，`inject` 会把整行 park 在那里。
+ */
+interface AgentPresetsLike {
+  resolve: (id?: string) => Promise<{ readonly id: string }>
+  mount: (agentCtx: unknown, id?: string) => Promise<unknown>
+}
+
 /** `ctx.llm` 里我们用到的部分。 */
 interface LlmLike {
   resolveModelInfo: (provider: string, model: string) => Promise<{ inputModalities?: readonly string[] } | undefined>
@@ -345,6 +355,14 @@ export class Coordinator {
       }
 
       const preset = this.config.permission.get()
+      // 挂 preset 是这个通道能不能「干活」的分水岭：web app 把工具行都藏在 preset 后面。
+      const presets = this.ctx.get('agentPresets') as AgentPresetsLike | undefined
+      const agentPreset = presets === undefined ? undefined : (await presets.resolve()).id
+      if (presets === undefined) {
+        this.report('宿主没有 agent preset 注册表：这个会话将只有极少的工具')
+      } else {
+        this.report('会话将挂载 preset', { agentPreset })
+      }
       const sessions = new PeerSessions({
         registry,
         cwd: this.config.cwd.get(),
@@ -353,6 +371,13 @@ export class Coordinator {
         onError: error => { this.report('会话释放失败', { error: String(error) }) },
         // 每个会话单独记权限：只影响这个通道造的会话，不动 profile 的全局默认。
         onHandle: handle => { this.applyPermission(handle, preset) },
+        ...(presets === undefined ? {} : {
+          setup: async (agentCtx: unknown, agent: unknown) => {
+            const header = (agent as { session?: { header?: { agentPreset?: string } } }).session?.header
+            await presets.mount(agentCtx, header?.agentPreset ?? agentPreset)
+          },
+        }),
+        ...(agentPreset === undefined ? {} : { agentPreset }),
       })
       const api = createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' })
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
