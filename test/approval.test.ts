@@ -26,6 +26,11 @@ describe('parseApprovalAnswer', () => {
     }
   })
 
+  it('全角数字也算明确答复', () => {
+    assert.equal(parseApprovalAnswer('１'), 'allow')
+    assert.equal(parseApprovalAnswer('２'), 'deny')
+  })
+
   it('含糊的话不算答复', () => {
     for (const text of ['', '   ', '嗯', '让我想想', '12', '好']) {
       assert.equal(parseApprovalAnswer(text), undefined, text)

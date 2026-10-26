@@ -33,6 +33,11 @@ describe('parseChoice', () => {
     assert.equal(parseChoice('2。'), 2)
   })
 
+  it('全角数字也认（中文输入法很常见）', () => {
+    assert.equal(parseChoice('１'), 1)
+    assert.equal(parseChoice('　４　'), 4)
+  })
+
   it('带内容的数字不是点击', () => {
     assert.equal(parseChoice('3 点开会'), undefined)
     assert.equal(parseChoice('12'), undefined)

@@ -12,6 +12,8 @@
  * @module wechat-persona/bridge/approval
  */
 
+import { normalizeDigits } from './text.ts'
+
 /** 审批结论。 */
 export type ApprovalAnswer = 'allow' | 'deny' | 'cancel'
 
@@ -51,7 +53,8 @@ const CANCEL = new Set(['3', 'c', 'cancel', '取消', '算了', '停'])
  * @returns 明确的答复；含糊时 undefined（继续等）。
  */
 export function parseApprovalAnswer(text: string): ApprovalAnswer | undefined {
-  const normalized = text.trim().toLowerCase()
+  // 全角数字要认：中文输入法下「１」和「1」是同一个意思。
+  const normalized = normalizeDigits(text).trim().toLowerCase()
   if (normalized === '') return undefined
   if (ALLOW.has(normalized)) return 'allow'
   if (DENY.has(normalized)) return 'deny'

@@ -12,6 +12,8 @@
  * @module wechat-persona/channel/menu
  */
 
+import { normalizeDigits } from '../bridge/text.ts'
+
 /** 卡片面板。 */
 export type MenuPanel = 'root' | 'personas' | 'model' | 'memory' | 'style'
 
@@ -52,7 +54,8 @@ const SPLIT_LABEL: Record<MenuView['split'], string> = {
  * @returns 0–9 的选项号；不是单个数字时 undefined。
  */
 export function parseChoice(text: string): number | undefined {
-  const normalized = text.trim().replace(/[。．.]$/u, '')
+  // 中文输入法下很容易打出全角「１」；它不是另一个选项，就是 1。
+  const normalized = normalizeDigits(text).trim().replace(/[。．.]$/u, '')
   if (!/^\d$/u.test(normalized)) return undefined
   return Number(normalized)
 }
