@@ -8,6 +8,10 @@ Versions before `0.2.0` are development builds and were never published.
 
 ## [Unreleased]
 
+### Added
+
+- Conversation evaluation accepts `--persona` and `--cases` for actual cards.
+
 ## [0.3.0-dev.0] - 2026-10-26
 
 ### Changed

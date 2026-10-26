@@ -6,7 +6,7 @@
 
 运行 `npm run evaluate:conversation -- --dsh /path/to/dsh --output /tmp/wechat-quality.json`。脚本使用临时提示词插件和独立的 headless 会话，逐轮恢复同一会话，不启动微信、不读取真实聊天、不允许工具产生外部操作。默认使用本项目的兜底人格。每个场景保存完整的合成对话供审阅，不把正则匹配当成自然程度评分。
 
-可先执行 `npm run evaluate:conversation -- --dry-run` 检查生成的真实提示词和语料。模型、凭据由本机 headless profile 决定；缺少模型凭据、超时或空回答都记为 `blocked`，不能记为通过。
+可先执行 `npm run evaluate:conversation -- --dry-run` 检查生成的真实提示词和语料。使用 `--persona <persona.json>` 可指定实际人格，`--cases <evaluation.json>` 可指定包含 `id`、`focus`、`turns` 的多轮语料，便于对自己维护的人格做逐轮检查。模型、凭据由本机 headless profile 决定；缺少模型凭据、超时或空回答都记为 `blocked`，不能记为通过。
 
 | 场景 | 重点 |
 |---|---|
