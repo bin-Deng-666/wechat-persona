@@ -37,6 +37,16 @@ describe('panel routes', () => {
     assert.match(page, /微信人格通道/)
   })
 
+  it('页面内联脚本语法合法（无顶层 await）', async () => {
+    const { handlers: h } = handlers()
+    const page = await createPanel(h).page().text()
+    const match = /<script>([\s\S]*?)<\/script>/.exec(page)
+    assert.ok(match?.[1] !== undefined, '页面应含内联脚本')
+    // classic script 里出现顶层 await 会直接 SyntaxError，用 Function 构造器兜住。
+    assert.doesNotThrow(() => { new Function(match[1] as string) })
+    assert.match(match[1] as string, /void init\(\)/)
+  })
+
   it('status 返回 JSON 且禁止缓存', async () => {
     const { handlers: h } = handlers()
     const response = await createPanel(h).status()

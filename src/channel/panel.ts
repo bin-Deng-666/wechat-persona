@@ -240,11 +240,12 @@ $('verify').onclick = async () => {
 }
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('verify').click() })
 
-const res = await fetch(P + '/personas')
-const list = await res.json()
-$('personas').innerHTML = list.length === 0
-  ? '还没有人格卡。在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>（可参考 examples/personas/xiao-jing）。'
-  : '<ul>' + list.map(p => '<li><b>' + p.name + '</b> <code>' + p.id + '</code>' + (p.description ? ' — ' + p.description : '') + '</li>').join('') + '</ul>'
+async function loadPersonas() {
+  const list = await (await fetch(P + '/personas')).json()
+  $('personas').innerHTML = list.length === 0
+    ? '还没有人格卡。在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>（可参考 examples/personas/xiao-jing）。'
+    : '<ul>' + list.map(p => '<li><b>' + p.name + '</b> <code>' + p.id + '</code>' + (p.description ? ' — ' + p.description : '') + '</li>').join('') + '</ul>'
+}
 
 async function loadChats() {
   const personas = await (await fetch(P + '/personas')).json()
@@ -272,8 +273,13 @@ async function loadChats() {
   }
 }
 
-loadChats()
-refresh()
+// 顶层不能用 await（这是普通 <script>，不是模块），统一放进 init。
+async function init() {
+  await loadPersonas()
+  await loadChats()
+  await refresh()
+}
+void init()
 </script>
 </body>
 </html>`
