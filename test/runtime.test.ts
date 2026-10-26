@@ -13,6 +13,8 @@ import { createAccessPolicy } from '../src/bridge/access.ts'
 import { ReplyQueue } from '../src/bridge/reply.ts'
 import { PeerSessions } from '../src/bridge/session.ts'
 import { PersonaStore } from '../src/persona/store.ts'
+import { ChatSettingsStore } from '../src/persona/settings.ts'
+import { PeerGenerations } from '../src/bridge/generations.ts'
 import type { ApiClient } from '../src/ilink/api.ts'
 
 /** 记录投递消息的假会话。 */
@@ -431,5 +433,105 @@ describe('输入状态', () => {
     })
     await channel.handle(userMessage())
     assert.deepEqual(started, [{ peerId: 'wxid-owner', token: 'ctx-1' }])
+  })
+})
+
+
+describe('内置命令', () => {
+  async function setup() {
+    const root = await mkdtemp(join(tmpdir(), 'cmd-personas-'))
+    await mkdir(join(root, 'alpha'), { recursive: true })
+    await writeFile(join(root, 'alpha', 'persona.json'), JSON.stringify({ id: 'alpha', name: '甲', prompt: { identity: '你是甲。' } }), 'utf8')
+    await mkdir(join(root, 'beta'), { recursive: true })
+    await writeFile(join(root, 'beta', 'persona.json'), JSON.stringify({ id: 'beta', name: '乙', prompt: { identity: '你是乙。' } }), 'utf8')
+
+    const delivered: { peerId: string; text: string; generation: number }[] = []
+    const sessions = {
+      deliver: async (peerId: string, message: { content: { type: string; text?: string }[] }, generation?: number) => {
+        delivered.push({ peerId, text: message.content.map(p => p.text ?? '').join(''), generation: generation ?? 0 })
+      },
+    }
+    const { events } = fakeEvents()
+    const sent: string[] = []
+    const settings = new ChatSettingsStore(join(root, 'chats'))
+    const generations = new PeerGenerations(join(root, 'generations.json'))
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions: sessions as unknown as PeerSessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore(root),
+      defaultPersona: 'alpha',
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      settings,
+      generations,
+      permissionLabel: 'danger-full-access',
+    })
+    return { channel, delivered, sent, settings, generations }
+  }
+
+  it('/help 只回复，不投给模型', async () => {
+    const { channel, delivered, sent } = await setup()
+    await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/help' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(delivered.length, 0)
+    assert.match(sent[0] ?? '', /可用命令/)
+  })
+
+  it('/new 之后的消息用新代次', async () => {
+    const { channel, delivered, sent, generations } = await setup()
+    await channel.handle(userMessage({ message_id: 'c1', item_list: [{ type: 1, text_item: { text: '/new' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.match(sent[0] ?? '', /已开新对话/)
+    assert.equal(await generations.get('wxid-owner'), 1)
+
+    await channel.handle(userMessage({ message_id: 'c2', item_list: [{ type: 1, text_item: { text: '你好' } }] }))
+    assert.equal(delivered.length, 1)
+    assert.equal(delivered[0]?.generation, 1)
+    // 新会话必须重新拿到完整人设，而不是只收到一行提醒
+    assert.match(delivered[0]?.text ?? '', /【角色设定/)
+  })
+
+  it('/status 报人格与段数', async () => {
+    const { channel, sent } = await setup()
+    await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/status' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.match(sent[0] ?? '', /甲（alpha）/)
+    assert.match(sent[0] ?? '', /danger-full-access/)
+  })
+
+  it('/persona 列出可选人格', async () => {
+    const { channel, sent } = await setup()
+    await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/persona' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.match(sent[0] ?? '', /alpha 甲/)
+    assert.match(sent[0] ?? '', /beta 乙/)
+  })
+
+  it('/persona <id> 切换并持久化', async () => {
+    const { channel, sent, settings } = await setup()
+    await channel.handle(userMessage({ message_id: 'p1', item_list: [{ type: 1, text_item: { text: '/persona beta' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.match(sent[0] ?? '', /已切到「乙」/)
+    assert.equal((await settings.get('wxid-owner')).personaId, 'beta')
+  })
+
+  it('/persona 给不存在的 id 时不改设置', async () => {
+    const { channel, sent, settings } = await setup()
+    await channel.handle(userMessage({ message_id: 'p2', item_list: [{ type: 1, text_item: { text: '/persona nope' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.match(sent[0] ?? '', /没有「nope」/)
+    assert.equal((await settings.get('wxid-owner')).personaId, undefined)
+  })
+
+  it('未知命令回复提示', async () => {
+    const { channel, delivered, sent } = await setup()
+    await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/whatever' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(delivered.length, 0)
+    assert.match(sent[0] ?? '', /没有 \/whatever/)
   })
 })

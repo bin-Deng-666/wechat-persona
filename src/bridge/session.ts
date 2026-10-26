@@ -19,10 +19,11 @@ export const SESSION_ID_PREFIX = 'channel-persona-'
  * 纯函数：同一个 peer 在任何一次重启后都落到同一个会话，从而接上已持久化的历史。
  * @param peerId - 微信用户 id。
  */
-export function sessionIdFor(peerId: string): SessionId {
+export function sessionIdFor(peerId: string, generation = 0): SessionId {
   // 会话 id 是路径片段，必须只含安全字符；其余用 `-` 替掉并保证唯一性（peer id 本身唯一）。
   const safe = peerId.replace(/[^A-Za-z0-9_-]/gu, '-')
-  return `${SESSION_ID_PREFIX}${safe}` as SessionId
+  // 代次 0 不加后缀，保持旧会话 id 不变（升级后能接上历史）。
+  return (generation <= 0 ? `${SESSION_ID_PREFIX}${safe}` : `${SESSION_ID_PREFIX}${safe}~g${String(generation)}`) as SessionId
 }
 
 /** registry 返回的句柄，只取我们用得到的部分。 */
@@ -103,11 +104,12 @@ export class PeerSessions {
    * 顺序：内存句柄 → registry 里已被别的 owner 启动的会话（直接借用，不 dispose）
    * → 已持久化的会话（resume）→ 新建。
    */
-  async acquire(peerId: string): Promise<AgentHandleLike> {
-    const existing = this.live.get(peerId)
+  async acquire(peerId: string, generation = 0): Promise<AgentHandleLike> {
+    const key = `${peerId}#${String(generation)}`
+    const existing = this.live.get(key)
     if (existing !== undefined) return existing
 
-    const sessionId = sessionIdFor(peerId)
+    const sessionId = sessionIdFor(peerId, generation)
     const registry = this.options.registry
 
     // 用 `get` 而不是只信本地表：会话可能被 GUI 或上一轮运行启动着。
@@ -118,7 +120,7 @@ export class PeerSessions {
         // 借用别人的 agent，绝不能在这里 dispose——那会把 GUI 的会话也一起关掉。
         dispose: async () => {},
       }
-      this.live.set(peerId, adopted)
+      this.live.set(key, adopted)
       this.options.onHandle?.(adopted)
       return adopted
     }
@@ -147,7 +149,7 @@ export class PeerSessions {
       }
     }
 
-    this.live.set(peerId, handle)
+    this.live.set(key, handle)
     this.options.onHandle?.(handle)
     return handle
   }
@@ -159,19 +161,21 @@ export class PeerSessions {
    * `followup` 打到死 agent 上是「接受然后丢掉」，所以这里先问 registry 它还在不在，
    * 不在就丢掉句柄重建一次——这是唯一能在投递路径上发现静默丢消息的地方。
    */
-  async deliver(peerId: string, message: never): Promise<void> {
-    const cached = this.live.get(peerId)
+  async deliver(peerId: string, message: never, generation = 0): Promise<void> {
+    const key = `${peerId}#${String(generation)}`
+    const cached = this.live.get(key)
     if (cached !== undefined && this.options.registry.get(cached.agent.id) === undefined) {
-      this.live.delete(peerId)
+      this.live.delete(key)
     }
-    const handle = await this.acquire(peerId)
+    const handle = await this.acquire(peerId, generation)
     handle.agent.followup(message)
   }
 
   /** 释放一个 peer 的句柄（不 dispose 借用的）。 */
-  async release(peerId: string): Promise<void> {
-    const handle = this.live.get(peerId)
-    this.live.delete(peerId)
+  async release(peerId: string, generation = 0): Promise<void> {
+    const key = `${peerId}#${String(generation)}`
+    const handle = this.live.get(key)
+    this.live.delete(key)
     if (handle !== undefined) await handle.dispose()
   }
 
@@ -188,7 +192,7 @@ export class PeerSessions {
     }
   }
 
-  /** 当前持有的 peer，供诊断与 GUI 展示。 */
+  /** 当前持有的 peer（含代次），供诊断与 GUI 展示。 */
   peers(): readonly string[] {
     return [...this.live.keys()]
   }

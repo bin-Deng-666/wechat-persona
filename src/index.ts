@@ -28,6 +28,7 @@ import { ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
 import type { MessageItem } from './ilink/types.ts'
 import { PeerSessions, type AgentHandleLike, type AgentRegistryLike } from './bridge/session.ts'
+import { PeerGenerations } from './bridge/generations.ts'
 import { Channel } from './channel/runtime.ts'
 import { TypingIndicator } from './channel/typing.ts'
 import { createFileLogger, type FileLogger } from './channel/log-file.ts'
@@ -105,6 +106,7 @@ export class Coordinator {
   private readonly store: PersonaStore
   private readonly chatSettings: ChatSettingsStore
   private readonly stickers: StickerLibrary
+  private readonly generations: PeerGenerations
   private readonly fileLog: FileLogger
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
@@ -131,6 +133,7 @@ export class Coordinator {
     this.store = new PersonaStore(join(dataDir, 'personas'))
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
+    this.generations = new PeerGenerations(join(dataDir, 'generations.json'))
     this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
@@ -422,6 +425,8 @@ export class Coordinator {
         personas: this.store,
         defaultPersona: this.config.defaultPersona.get(),
         settings: this.chatSettings,
+        generations: this.generations,
+        permissionLabel: preset,
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
         replies,

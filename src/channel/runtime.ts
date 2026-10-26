@@ -21,6 +21,8 @@ import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../persona/settings.ts'
 import { proactiveInstruction, shouldPoke } from './proactive.ts'
 import { parseStickerToken } from '../persona/stickers.ts'
+import { formatAgo, formatHelp, formatNewChat, formatPersona, formatStatus, formatUnknown, parseCommand } from './commands.ts'
+import type { PeerGenerations } from '../bridge/generations.ts'
 
 /** 一个已登录账号。 */
 export interface ChannelAccount {
@@ -60,6 +62,10 @@ export interface ChannelOptions {
   timeZone?: string
   /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
   settings?: ChatSettingsStore
+  /** 每个聊天的对话代次（/new 用）；缺失表示不支持开新对话。 */
+  generations?: PeerGenerations
+  /** 当前权限档位，仅用于 /status 展示。 */
+  permissionLabel?: string
   /** 输入状态上报；缺失表示不上报（headless 也能跑）。 */
   typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
   /** 发一张本地表情；返回是否发出。缺失表示这个部署没有表情库。 */
@@ -205,8 +211,17 @@ export class Channel {
     // 让手机那头看到「对方正在输入」。失败无所谓，所以不 await。
     void this.options.typing?.start(peerId, message.context_token)
 
-    const sessionId = sessionIdFor(peerId)
+    const generation = this.options.generations === undefined ? 0 : await this.options.generations.get(peerId)
+    const sessionId = sessionIdFor(peerId, generation)
     this.peerBySession.set(sessionId, peerId)
+
+    // 命令先于一切：/help 不该进模型，/new 更不能作为一条消息喂给旧会话。
+    const rawText = textOf(message)
+    const command = parseCommand(rawText)
+    if (command !== undefined) {
+      await this.runCommand(peerId, command, generation, message.context_token)
+      return
+    }
 
     const settings: ChatSettings = this.options.settings === undefined
       ? DEFAULT_CHAT_SETTINGS
@@ -222,7 +237,7 @@ export class Channel {
     const text = composeInboundText({
       card,
       peer: peerId,
-      text: textOf(message),
+      text: rawText,
       first: !this.warmed.has(peerId),
       ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }),
       ...(this.options.now === undefined ? {} : { now: new Date(this.options.now()) }),
@@ -247,9 +262,10 @@ export class Channel {
       source: { kind: 'user' },
     })
     this.lastActivity.set(peerId, (this.options.now ?? Date.now)())
+    this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
     if (settings.maxChars === undefined) this.chatMaxChars.delete(peerId)
     else this.chatMaxChars.set(peerId, settings.maxChars)
-    await this.options.sessions.deliver(peerId, userMessage as never)
+    await this.options.sessions.deliver(peerId, userMessage as never, generation)
   }
 
   /** 人格快照：run 时加载一次；直接调 handle（测试/补投）时按需加载。 */
@@ -258,6 +274,85 @@ export class Channel {
     // 这样「改人格卡 → 下一条消息生效」，不必重启。
     this.snapshot = await this.options.personas.snapshot()
     return this.snapshot
+  }
+
+  /** 每个 peer 处理过的消息条数（/status 用）。 */
+  private readonly turnCounts = new Map<string, number>()
+
+  /**
+   * 执行一条内置命令。
+   *
+   * 命令的回复走和模型回复同一条队列：这样限流、切分、失败提示都自动复用。
+   */
+  private async runCommand(peerId: string, command: { name: string; args: string[] }, generation: number, contextToken: string | undefined): Promise<void> {
+    const reply = (text: string): void => {
+      void this.options.replies.enqueue(peerId, text, contextToken, this.chatMaxChars.get(peerId))
+    }
+
+    switch (command.name) {
+      case 'help':
+        reply(formatHelp())
+        return
+
+      case 'new': {
+        if (this.options.generations === undefined) {
+          reply('这个部署没有开启多段对话。')
+          return
+        }
+        // 旧会话不 dispose：它的历史还在，只是这个聊天不再往那儿投递。
+        const next = await this.options.generations.bump(peerId)
+        // 新会话是空的，得重新注入完整人设；否则它只收到一行提醒，等于没人设。
+        this.warmed.delete(peerId)
+        reply(formatNewChat(next))
+        this.options.report?.('开了新对话', { peerId, generation: next })
+        return
+      }
+
+      case 'status': {
+        const snapshot = await this.ensureSnapshot()
+        const settings = this.options.settings === undefined ? DEFAULT_CHAT_SETTINGS : await this.options.settings.get(peerId)
+        const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
+        const last = this.lastActivity.get(peerId)
+        const now = (this.options.now ?? Date.now)()
+        reply(formatStatus({
+          personaId: card.id,
+          personaName: card.name,
+          generation,
+          turns: this.turnCounts.get(peerId) ?? 0,
+          permission: this.options.permissionLabel ?? '未知',
+          ...(last === undefined ? {} : { lastActive: formatAgo(now - last) }),
+        }))
+        return
+      }
+
+      case 'persona': {
+        const snapshot = await this.ensureSnapshot()
+        const choices = [...snapshot.personas.values()].map(persona => ({ id: persona.card.id, name: persona.card.name }))
+        const settings = this.options.settings
+        if (settings === undefined) {
+          reply('这个部署没有可写的聊天设置。')
+          return
+        }
+        if (command.args.length === 0) {
+          const current = (await settings.get(peerId)).personaId ?? this.options.defaultPersona
+          reply(formatPersona(current, choices))
+          return
+        }
+        const wanted = command.args[0] ?? ''
+        const found = choices.find(choice => choice.id === wanted)
+        if (found === undefined) {
+          reply(`没有「${wanted}」这张人格卡。\n\n${formatPersona(this.options.defaultPersona, choices)}`)
+          return
+        }
+        const current = await settings.get(peerId)
+        await settings.save(peerId, { ...current, personaId: found.id })
+        reply(formatPersona(found.id, choices, found))
+        return
+      }
+
+      default:
+        reply(formatUnknown(command.name))
+    }
   }
 
   /** 每个 peer 最后一次说话的时间，主动搭话用。 */

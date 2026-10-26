@@ -83,12 +83,25 @@ npm run login                      # 可加 --png /tmp/qr.png 把二维码写成
 > `/persona-wechat/panel?key=…` 这套带密钥的公开入口是为 `dsh web`（真浏览器）准备的；
 > 桌面版宿主的 HTTP 层只把 `/api/*` 转给插件，所以它返回 404。**别指望它。**
 
+## 微信里的命令
+
+| 命令 | 作用 |
+|---|---|
+| `/help` | 列出命令 |
+| `/new` | 开新一段对话（旧记录保留，不再带上下文） |
+| `/status` | 当前人格、第几段对话、累计消息数、权限档位 |
+| `/persona` | 列出人格卡（→ 标当前） |
+| `/persona <id>` | 切换这个聊天的人格（立即生效） |
+
+命令不会发给模型；回复走和普通回复同一条队列（限流/切分/失败提示都复用）。
+
 ## 配置（桌面版目前靠文件）
 
 ```text
 ~/.dsh/wechat-persona/
 ├── account.json                登录凭据（0600；删掉 = 退出登录）
 ├── cursor.json                 每个账号的轮询游标（重启不重放）
+├── generations.json            每个聊天的对话代次（/new 用）
 ├── logs/plugin-YYYY-MM-DD.log  插件诊断日志，出问题先看这里
 ├── personas/<id>/persona.json  人格卡（docs/persona.md）
 ├── chats/<peer>/settings.json  每聊天：人格 / 是否回复 / 长度上限 / 是否主动
