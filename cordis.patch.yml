@@ -1,0 +1,17 @@
+# 本插件自带的 profile patch 层。`dsh.bundle.patch` 指向这里，
+# `dsh plugin add` 会把这一行插进 profile 的 bundle 列表。
+- insert:
+    - id: persona-wechat
+      name: dsh-wechat-persona
+      config:
+        # 这个通道创建的会话记录的工作目录。会话 header 的 cwd 写入后不可改，
+        # 所以不设代码内默认值：静默默认会把错误目录永久写进会话。
+        cwd: !!js process.cwd()
+        # 人格卡、聊天设置、记忆、媒体缓存的根目录。相对路径按 profile 目录解析。
+        dataDir: data/wechat-persona
+        # 谁能驱动这个机器人。留空 = 只允许扫码登录的那个微信号。
+        allow: []
+        # 每个聊天默认人格（data/personas/<id>）。不存在时回落到内置 default。
+        defaultPersona: default
+        # 插件自己的诊断日志保留天数。
+        logRetentionDays: 7

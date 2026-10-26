@@ -1,0 +1,10 @@
+node_modules/
+lib/
+dist/
+*.log
+.DS_Store
+
+# 运行时数据：人格卡、聊天设置、记忆、下载的媒体，都不进仓库
+data/
+state/
+tmp/
