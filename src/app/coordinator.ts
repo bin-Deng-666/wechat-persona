@@ -32,6 +32,7 @@ import { PeerSystemPrompt } from '../dsh/system-prompt.ts'
 import { ReplyQueue, type SendContext } from '../reply/queue.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from '../dsh/attachments.ts'
 import { compactPeer, type CompactionEngineLike } from '../dsh/compaction.ts'
+import { WorkspaceGrouper, type SessionPersistenceLike, type WorkspaceRegistryLike } from '../dsh/workspace.ts'
 import type { MessageItem } from '../ilink/types.ts'
 import { PeerSessions, SESSION_ID_PREFIX, type AgentHandleLike, type AgentRegistryLike } from '../dsh/sessions.ts'
 import { PeerGenerations } from '../chat/generations.ts'
@@ -383,6 +384,15 @@ export class Coordinator {
         this.report('会话将挂载 preset', { agentPreset })
       }
       const history = new ConversationStore(join(this.dataDir, 'conversations', createHash('sha256').update(account.accountId).digest('hex')))
+      // 会话列表按工作区分组；本插件的会话有自己的 cwd，要主动挂一次。
+      const grouper = new WorkspaceGrouper({
+        registry: this.ctx.get('workspaceRegistry') as WorkspaceRegistryLike | undefined,
+        persistence: this.ctx.get('sessionPersistence') as SessionPersistenceLike | undefined,
+        cwd: this.config.cwd.get(),
+        title: '微信',
+        report: this.report,
+      })
+      if (!grouper.available) this.report('宿主没有工作区注册表：微信会话会显示在「未分组」下')
       let channel: Channel
       const prompts = new PeerSystemPrompt({
         personas: this.store,
@@ -409,6 +419,7 @@ export class Coordinator {
           if (handle.agent.ctx === undefined) throw new Error('宿主 agent 缺少会话作用域')
           prompts.install(handle.agent.ctx, handle.agent, peerId)
           this.applyPermission(handle, preset)
+          void grouper.attach(String(handle.agent.id))
         },
         setup: async (agentCtx, agent, peerId) => {
           const header = (agent as { session?: { header?: { agentPreset?: string } } }).session?.header
@@ -478,7 +489,6 @@ export class Coordinator {
           this.login.markExpired()
         },
         prepareMedia: this.mediaPreparer(),
-        // 压缩由宿主提供；没有这个服务时命令会回一句「这个宿主没有提供压缩能力」。
         compact: async (peerId, generation, signal) => await compactPeer({
           signal,
           engine: this.ctx.get('compaction') as CompactionEngineLike | undefined,
@@ -487,6 +497,8 @@ export class Coordinator {
           generation,
           report: this.report,
         }),
+        // 一轮跑完时会话一定已落盘，这时把它归入工作区最稳。
+        onSessionSettled: sessionId => { void grouper.attach(sessionId) },
       })
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。
@@ -504,6 +516,9 @@ export class Coordinator {
 
       // 不 await：循环跑到 stop 为止；失败要落日志而不是变成未处理的 rejection。
       void channel.run(cursor).catch((error: unknown) => { this.report('通道停止', { error: String(error) }) })
+
+      // 把上一轮运行留下的会话从「未分组」补齐到工作区。
+      void grouper.sweep().then(count => { if (count > 0) this.report('已有会话归入工作区', { title: '微信', count }) })
 
       // 游标定期落盘：重启后不重放已经回过的消息。
       const timer = setInterval(() => {

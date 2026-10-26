@@ -47,6 +47,8 @@ export interface ChannelOptions {
   settings?: ChatSettingsStore
   generations?: PeerGenerations
   compact?: (peerId: string, generation: number, signal?: AbortSignal) => Promise<CompactOutcome>
+  /** 一轮结束时把会话 id 交给宿主（用于归入工作区）；缺失表示不需要。 */
+  onSessionSettled?: (sessionId: string) => void
   permissionLabel?: string
   typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
   approvals?: { answer: (peerId: string, text: string) => boolean; cancel: (peerId: string, why?: string) => void }
@@ -342,7 +344,7 @@ export class Channel {
       if (event.type === 'user/message') { if (typeof data.id === 'string') conversation.messageClaimed(data.id); return }
       const activity = conversation.eventActivity(turn)
       if (!activity) return
-      if (event.type === 'turn/end') { this.onTurnEnd(conversation, event, turn); return }
+      if (event.type === 'turn/end') { this.options.onSessionSettled?.(String(session.id)); this.onTurnEnd(conversation, event, turn); return }
       // A response generated before fresh steering was consumed cannot answer that steering.
       if (turn !== undefined && activity.pendingMessages.size > 0) return
       if (event.type === 'deliverables/presented') { this.present(conversation, activity, data, event); return }
