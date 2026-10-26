@@ -15,13 +15,14 @@ import { ChatControls } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
 import type { ReplyQueue, DeliveryReport } from '../reply/queue.ts'
-import { extractAssistantText } from '../dsh/events.ts'
+import { extractAssistantText, extractToolActivity } from '../dsh/events.ts'
 import { PeerSessions, sessionIdFor } from '../dsh/sessions.ts'
 import { PersonaStore } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../chat/settings.ts'
 import { extractStickerAnnotations } from '../stickers/markers.ts'
 import type { StickerLibrary } from '../stickers/library.ts'
 import { parseCommand } from './commands.ts'
+import { progressLine } from './progress.ts'
 import type { PeerGenerations } from '../chat/generations.ts'
 import { SerialWork } from '../storage/atomic.ts'
 import type { PeerMemory } from '../memory/store.ts'
@@ -344,7 +345,9 @@ export class Channel {
     if (delay <= 0) return
     const timer = setTimeout(() => {
       this.progress.delete(conversation.peerId)
-      if (conversation.activity === activity && activity.phase === 'running' && !activity.signal.aborted) this.notice(conversation, '还在处理，稍等一下。', activity)
+      if (conversation.activity !== activity || activity.phase !== 'running' || activity.signal.aborted) return
+      const line = progressLine(activity.status)
+      if (line !== undefined) this.notice(conversation, line, activity)
     }, delay)
     timer.unref?.(); this.progress.set(conversation.peerId, timer)
   }
@@ -367,7 +370,12 @@ export class Channel {
       if (turn !== undefined && activity.pendingMessages.size > 0) return
       if (event.type === 'deliverables/presented') { this.present(conversation, activity, data, event); return }
       const text = extractAssistantText(event)
-      if (text === undefined) return
+      if (text === undefined) {
+        // 带工具调用的一步不发正文，但它是「它正在干什么」最准的来源：记下来给长任务进度提示用。
+        const tool = extractToolActivity(event)
+        if (tool !== undefined) activity.status = tool
+        return
+      }
       this.clearProgress(conversation.peerId)
       const scope = conversation.scope(activity)
       const token = activity.contextToken

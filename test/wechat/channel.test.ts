@@ -563,11 +563,33 @@ describe('连发合并与失败反馈', () => {
     assert.ok(sent.some(item => item.text.includes('长度上限')))
   })
 
-  it('跑太久会先回一句「还在弄」', async () => {
-    const { channel, sent } = setup({ progressAfterMs: 20 })
+  it('没有「在做什么」的信息时，不再发一句固定台词', async () => {
+    const { channel, sent } = setup({ progressAfterMs: 50 })
     await channel.handle(userMessage())
-    await new Promise(resolve => setTimeout(resolve, 80))
-    assert.ok(sent.some(item => item.text.includes('还在处理')), JSON.stringify(sent))
+    await new Promise(resolve => setTimeout(resolve, 150))
+    assert.deepEqual(sent, [])
+  })
+
+  it('有模型旁白时，用它的原话当进度提示', async () => {
+    const { channel, sent, emit } = setup({ progressAfterMs: 50 })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '我先看一下日志' }, { type: 'tool-call', name: 'bash' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 150))
+    assert.deepEqual(sent.map(item => item.text), ['我先看一下日志'])
+  })
+
+  it('只有工具名时，按正在跑的工具说一句', async () => {
+    const { channel, sent, emit } = setup({ progressAfterMs: 50 })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'tool-call', name: 'bash' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 150))
+    assert.deepEqual(sent.map(item => item.text), ['还在跑命令，稍等一下。'])
   })
 
   it('正常结束时不多嘴', async () => {

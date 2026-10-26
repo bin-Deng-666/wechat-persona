@@ -4,6 +4,7 @@ import type { InboundRecord } from './history.ts'
 import type { MemoryActivity } from '../memory/capture.ts'
 import { SerialWork } from '../storage/atomic.ts'
 import type { ReplyScope } from '../reply/queue.ts'
+import type { ToolActivity } from '../dsh/events.ts'
 
 export interface ConversationActivity extends MemoryActivity {
   controller: AbortController
@@ -12,6 +13,8 @@ export interface ConversationActivity extends MemoryActivity {
   contextToken?: string
   phase: 'running' | 'compacting' | 'idle'
   turn?: number
+  /** 当前这一步「在干什么」；用于长任务进度提示。 */
+  status?: ToolActivity
   suppressedTurns: Set<number>
 }
 export class PeerConversation {

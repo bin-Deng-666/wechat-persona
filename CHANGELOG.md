@@ -15,6 +15,12 @@ Versions before `0.2.0` are development builds and were never published.
   等凭据。
 - Conversation evaluation accepts `--persona` and `--cases` for actual cards.
 
+### Changed
+
+- 长任务进度提示不再发固定台词「还在处理，稍等一下。」：优先用模型自己这一步的旁白（它刚
+  说过要做什么），其次按正在跑的工具说一句；两者都没有时不发，不让它变成一句无关的固定
+  说辞。
+
 ### Fixed
 
 - 出站媒体的 `aes_key` 统一为「先写 32 位 hex 字符串、再对该字符串做 base64」。图片此前误用
