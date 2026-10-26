@@ -454,6 +454,7 @@ export class Coordinator {
         thinkingMs: (_peerId, text) => humanThinkingMs(text),
         // 每发一条，微信都会把「正在输入」清掉；多气泡之间重报一次，读起来才连贯。
         onChunk: peerId => { void typing.start(peerId) },
+        onSlowSend: (peerId, spent, chars) => { this.report('单次发送很慢', { peerId, spent, chars }) },
         // 一条回复（可能好几个气泡）彻底发完才收尾——否则气泡之间会一闪一闪。
         onDrain: peerId => { void typing.stop(peerId) },
         onGiveUp: (peerId, text, error) => {

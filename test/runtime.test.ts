@@ -194,6 +194,39 @@ describe('Channel.run', () => {
     assert.equal(channel.getCursor(), 'cursor-2')
     assert.equal(polls, 2)
   })
+
+  it('主动切断的长轮询不算故障，不触发退避也不报错', async () => {
+    const { sessions } = fakeSessions()
+    const { events } = fakeEvents()
+    const reports: string[] = []
+    let polls = 0
+    const channel = new Channel({
+      api: {
+        getUpdates: async () => {
+          polls += 1
+          if (polls < 3) {
+            // 模拟「我们 4 秒切断」：分类是 timeout，而不是服务端拒绝。
+            throw Object.assign(new Error('getupdates: 请求超时'), { classification: { type: 'timeout', description: '请求超时' } })
+          }
+          await channel.stop()
+          throw new Error('aborted')
+        },
+      } as unknown as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent-personas'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {} }),
+      events,
+      report: line => { reports.push(line) },
+      sleep: async () => { throw new Error('不该睡：超时后应立刻重问') },
+      mergeWindowMs: 0,
+    })
+    await channel.run()
+    assert.equal(polls, 3)
+    assert.deepEqual(reports.filter(line => line.includes('轮询失败')), [])
+  })
 })
 
 

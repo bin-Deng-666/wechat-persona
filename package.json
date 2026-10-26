@@ -1,6 +1,6 @@
 {
   "name": "dsh-wechat-persona",
-  "version": "0.1.0-dev.5",
+  "version": "0.1.0-dev.7",
   "private": true,
   "type": "module",
   "description": "微信单聊人格聊天通道（DSH 插件，基于腾讯 iLink 官方协议）",

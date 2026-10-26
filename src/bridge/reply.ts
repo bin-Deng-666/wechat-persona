@@ -118,6 +118,8 @@ export interface ReplyQueueOptions {
    * 秒回是机器味最重的地方：人打字需要时间，条越长越久。返回 0 表示不等。
    */
   thinkingMs?: (peerId: string, text: string) => number
+  /** 单次发送超过 1 秒时回调（诊断用）。 */
+  onSlowSend?: (peerId: string, spentMs: number, chars: number) => void
   /** 测试注入的 sleep。 */
   sleep?: (ms: number) => Promise<void>
   /** 测试注入的时钟。 */
@@ -231,7 +233,11 @@ export class ReplyQueue {
       for (;;) {
         await this.pace(item.peerId, sleep)
         try {
+          const sendStarted = (this.options.now ?? Date.now)()
           await this.options.send(item.peerId, chunk, item.contextToken)
+          const spent = (this.options.now ?? Date.now)() - sendStarted
+          // 只记慢的：正常 300ms 的发送不值得刷日志，超过 1 秒就要看得见。
+          if (spent > 1_000) this.options.onSlowSend?.(item.peerId, spent, chunk.length)
           this.lastSentAt.set(item.peerId, (this.options.now ?? Date.now)())
           break
         } catch (error) {

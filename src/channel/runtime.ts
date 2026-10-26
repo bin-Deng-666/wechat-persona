@@ -108,7 +108,15 @@ export interface ChannelOptions {
   progressAfterMs?: number
 }
 
-const DEFAULT_POLL_TIMEOUT_MS = 35_000
+/**
+ * 单次长轮询的客户端上限。
+ *
+ * 服务端会把空闲请求握住十几秒（实测约 18s），**而且新消息不会唤醒已经握住的请求**——
+ * 只会在下一次请求开始时交出来。于是「你发完等多久」完全取决于撞上当前 hold 的剩余时间。
+ * 主动在 4 秒时切断重问，把最坏等待从 18 秒压到 4 秒出头；代价是请求数变多，
+ * 但空闲时的空请求本来就只是心跳。
+ */
+const DEFAULT_POLL_TIMEOUT_MS = 4_000
 const DEFAULT_MAX_BACKOFF_MS = 60_000
 const MAX_SEEN_IDS = 2_000
 /** 连发消息的合并窗口：微信用户习惯把一句话拆成几条发，逐条回会变成审问。 */
@@ -204,7 +212,7 @@ export class Channel {
           label: 'getupdates',
           token: this.options.account.token,
           ...(this.cursor === undefined ? {} : { cursor: this.cursor }),
-          timeoutMs: (this.pollTimeout ?? pollTimeout) + 5_000,
+          timeoutMs: this.pollTimeout ?? pollTimeout,
           signal: this.abort.signal,
         })
         backoff = 1_000
@@ -216,10 +224,9 @@ export class Channel {
         for (const raw of result.msgs) await this.handle(raw)
         if (result.get_updates_buf !== undefined) this.cursor = result.get_updates_buf
 
-        // 服务端会告诉我们它愿意 hold 多久；按它给的值设客户端超时，
-        // 免得「服务端 hold 50 秒、客户端 40 秒就断」——那样每次都在同一个点上白跑。
+        // 服务端建议的 hold 只用来「往小里收」：它越大，我们越要勤问。
         if (result.longpolling_timeout_ms !== undefined && result.longpolling_timeout_ms > 0) {
-          this.pollTimeout = Math.max(5_000, result.longpolling_timeout_ms + 3_000)
+          this.pollTimeout = Math.min(this.pollTimeout, result.longpolling_timeout_ms)
         }
 
         // 服务端本该 hold 住请求；如果它秒回且没有消息，这里补一小段睡眠，
@@ -227,6 +234,8 @@ export class Channel {
         if (result.msgs.length === 0 && waited < 500) await this.sleep(500 - waited)
       } catch (error) {
         if (!this.running) break
+        // 主动切断的空转不是故障：这是我们自己在缩短 hold，直接开下一次。
+        if (isTimeout(error)) continue
         if (error instanceof BusinessError && error.code === ERRCODE_SESSION_EXPIRED) {
           this.options.report?.('微信会话已失效（errcode -14），需要在插件页重新扫码')
           this.options.onSessionExpired?.()
@@ -476,7 +485,9 @@ export class Channel {
   /** 一条纯文本回复（走正常队列，限流/分条都复用）。 */
   private async answer(peerId: string, text: string, contextToken: string | undefined): Promise<void> {
     const plan = this.plans.get(peerId) ?? DEFAULT_REPLY_PLAN
+    const started = (this.options.now ?? Date.now)()
     await this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' }, { immediate: true })
+    this.options.report?.(`卡片已发出（${String((this.options.now ?? Date.now)() - started)}ms）`)
   }
 
   /** 读这个聊天的设置；没有设置仓库时用默认值。 */
@@ -646,7 +657,9 @@ export class Channel {
    */
   private async runCommand(peerId: string, command: { name: string; args: string[] }, generation: number, contextToken: string | undefined): Promise<void> {
     const reply = (text: string): void => {
+      const started = (this.options.now ?? Date.now)()
       void this.options.replies.enqueue(peerId, text, contextToken, this.plans.get(peerId), { immediate: true })
+        .then(() => this.options.report?.(`命令 /${command.name} 的回复已发出（${String((this.options.now ?? Date.now)() - started)}ms）`))
     }
 
     switch (command.name) {
@@ -1044,4 +1057,10 @@ export class Channel {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/** 传输层超时（我们自己的 hold 到点了），不是服务端拒绝。 */
+function isTimeout(error: unknown): boolean {
+  const classification = (error as { classification?: { type?: string } } | null)?.classification
+  return classification?.type === 'timeout'
 }
