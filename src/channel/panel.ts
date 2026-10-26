@@ -40,6 +40,10 @@ export interface PanelHandlers {
   logout: () => Promise<LoginView>
   /** 人格卡概览。 */
   personas: () => Promise<PersonaSummary[]>
+  /** 读一张人格卡的原始 JSON。 */
+  readPersona: (id: string) => Promise<{ ok: boolean; raw?: string; error?: string }>
+  /** 写一张人格卡；校验不过不落盘。 */
+  writePersona: (id: string, raw: string) => Promise<{ ok: boolean; issues: string[]; warnings: string[] }>
   /** 已知聊天的设置。 */
   chats: () => Promise<ChatSummary[]>
   /** 更新一个聊天的设置。 */
@@ -75,6 +79,8 @@ export interface PanelRoutes {
   personas: () => Promise<Response>
   chats: () => Promise<Response>
   setChat: (request: Request) => Promise<Response>
+  readPersona: (request: Request) => Promise<Response>
+  writePersona: (request: Request) => Promise<Response>
 }
 
 function json(value: unknown, status = 200): Response {
@@ -127,6 +133,24 @@ export function createPanel(handlers: PanelHandlers): PanelRoutes {
       if (typeof body['proactive'] === 'boolean') patch.proactive = body['proactive']
       return json(await handlers.setChat(patch))
     },
+    readPersona: async request => {
+      const id = new URL(request.url).searchParams.get('id') ?? ''
+      if (!/^[a-z0-9-]{1,32}$/u.test(id)) return json({ error: 'id 不合法' }, 400)
+      return json(await handlers.readPersona(id))
+    },
+    writePersona: async request => {
+      let body: { id?: unknown; raw?: unknown }
+      try {
+        body = (await request.json()) as { id?: unknown; raw?: unknown }
+      } catch {
+        return json({ error: '请求体必须是 JSON' }, 400)
+      }
+      const id = typeof body.id === 'string' ? body.id : ''
+      const raw = typeof body.raw === 'string' ? body.raw : ''
+      if (!/^[a-z0-9-]{1,32}$/u.test(id)) return json({ error: 'id 不合法' }, 400)
+      const result = await handlers.writePersona(id, raw)
+      return json(result, result.ok ? 200 : 422)
+    },
   }
 }
 
@@ -178,6 +202,15 @@ function renderPage(): string {
   <div class="card">
     <h2 style="font-size:15px;margin:0 0 8px">人格卡</h2>
     <div id="personas" class="muted">加载中…</div>
+    <div id="editor" hidden style="margin-top:12px">
+      <textarea id="personaraw" rows="16" spellcheck="false"
+        style="width:100%;box-sizing:border-box;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:10px;border-radius:8px;border:1px solid rgba(127,127,127,.4);background:transparent;color:inherit"></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="primary" id="savepersona">保存</button>
+        <button id="cancelpersona">取消</button>
+        <span id="personamsg" class="muted"></span>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -239,12 +272,45 @@ $('verify').onclick = async () => {
   poll()
 }
 $('code').addEventListener('keydown', e => { if (e.key === 'Enter') $('verify').click() })
+$('savepersona').addEventListener('click', savePersona)
+$('cancelpersona').addEventListener('click', () => { $('editor').hidden = true })
 
 async function loadPersonas() {
   const list = await (await fetch(P + '/personas')).json()
-  $('personas').innerHTML = list.length === 0
-    ? '还没有人格卡。在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>（可参考 examples/personas/xiao-jing）。'
-    : '<ul>' + list.map(p => '<li><b>' + p.name + '</b> <code>' + p.id + '</code>' + (p.description ? ' — ' + p.description : '') + '</li>').join('') + '</ul>'
+  if (list.length === 0) {
+    $('personas').innerHTML = '还没有人格卡。点下面的「新建」写一张，或在数据目录下建 <code>personas/&lt;id&gt;/persona.json</code>。'
+    return
+  }
+  $('personas').innerHTML = '<ul style="padding-left:18px">' + list.map(p =>
+    '<li style="margin:4px 0"><b>' + p.name + '</b> <code>' + p.id + '</code>' +
+    (p.description ? ' — ' + p.description : '') +
+    ' <button data-edit="' + p.id + '">编辑</button>' +
+    (p.warnings && p.warnings.length ? ' <span class="err">（' + p.warnings.length + ' 条告警）</span>' : '') +
+    '</li>'
+  ).join('') + '</ul>'
+  for (const button of document.querySelectorAll('#personas button[data-edit]')) {
+    button.addEventListener('click', () => openPersona(button.getAttribute('data-edit')))
+  }
+}
+
+async function openPersona(id) {
+  const result = await (await fetch(P + '/persona?id=' + encodeURIComponent(id))).json()
+  $('editor').hidden = false
+  $('personaraw').value = result.ok ? result.raw : ''
+  $('personamsg').textContent = result.ok ? '正在编辑 ' + id : (result.error || '读取失败')
+  $('editor').setAttribute('data-id', id)
+}
+
+async function savePersona() {
+  const id = $('editor').getAttribute('data-id')
+  if (!id) { $('personamsg').textContent = '先选一张卡'; return }
+  const res = await post('/persona/save', { id, raw: $('personaraw').value })
+  if (res.ok) {
+    $('personamsg').textContent = res.warnings && res.warnings.length ? '已保存（' + res.warnings.join('；') + '）' : '已保存'
+    loadPersonas()
+  } else {
+    $('personamsg').textContent = '没保存：' + (res.issues || []).join('；')
+  }
 }
 
 async function loadChats() {

@@ -20,6 +20,11 @@ function handlers(overrides: Partial<Parameters<typeof createPanel>[0]> = {}) {
     logout: async () => { calls.push('logout'); return idle },
     personas: async () => { calls.push('personas'); return [{ id: 'xiao-jing', name: '小鲸', description: '', warnings: [] }] },
     chats: async () => { calls.push('chats'); return [{ peerId: 'wxid-1', enabled: true, proactive: false }] },
+    readPersona: async (id: string) => { calls.push(`read:${id}`); return { ok: true, raw: '{"id":"xiao-jing"}' } },
+    writePersona: async (id: string, raw: string) => {
+      calls.push(`write:${id}`)
+      return raw.includes('bad') ? { ok: false, issues: ['prompt.identity: 缺少'], warnings: [] } : { ok: true, issues: [], warnings: [] }
+    },
     setChat: async (patch: { peerId: string; enabled?: boolean }) => {
       calls.push(`setChat:${patch.peerId}`)
       return { peerId: patch.peerId, enabled: patch.enabled ?? true, proactive: false }
@@ -89,6 +94,23 @@ describe('panel routes', () => {
     assert.equal(patched.status, 200)
     assert.equal(((await patched.json()) as { enabled: boolean }).enabled, false)
     assert.ok(calls.includes('setChat:wxid-1'))
+  })
+
+  it('persona 读写路由', async () => {
+    const { handlers: h } = handlers()
+    const panel = createPanel(h)
+    const read = await panel.readPersona(new Request('http://local/api/persona-wechat/persona?id=xiao-jing'))
+    assert.equal(read.status, 200)
+    assert.equal(((await read.json()) as { ok: boolean }).ok, true)
+
+    const good = await panel.writePersona(new Request('http://local/x', { method: 'POST', body: JSON.stringify({ id: 'xiao-jing', raw: '{}' }) }))
+    assert.equal(good.status, 200)
+
+    const badJson = await panel.writePersona(new Request('http://local/x', { method: 'POST', body: JSON.stringify({ id: 'xiao-jing', raw: 'bad' }) }))
+    assert.equal(badJson.status, 422)
+
+    const badId = await panel.readPersona(new Request('http://local/x?id=BAD_ID'))
+    assert.equal(badId.status, 400)
   })
 
   it('chat 路由缺 peerId 时 400', async () => {

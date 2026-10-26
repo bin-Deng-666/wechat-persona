@@ -77,7 +77,7 @@ describe('apply', () => {
     assert.equal(fake.routes.length, 0)
   })
 
-  it('有 connection 时挂上面板的九条路由', async () => {
+  it('有 connection 时挂上面板的十一条路由', async () => {
     const host = fakeContext()
     const fake = fakeContext({ services: { connection: host.connection } })
     apply(fake.ctx, config)
@@ -89,6 +89,8 @@ describe('apply', () => {
       '/api/persona-wechat/chats',
       '/api/persona-wechat/logout',
       '/api/persona-wechat/panel',
+      '/api/persona-wechat/persona',
+      '/api/persona-wechat/persona/save',
       '/api/persona-wechat/personas',
       '/api/persona-wechat/poll',
       '/api/persona-wechat/status',

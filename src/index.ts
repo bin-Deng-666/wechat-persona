@@ -8,7 +8,7 @@
  */
 
 import { isAbsolute, join, resolve } from 'node:path'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 
 import { Config } from './config.ts'
@@ -16,6 +16,7 @@ import type { Config as ConfigShape } from './config.ts'
 import { createApiClient } from './ilink/api.ts'
 import type { LoginCredentials } from './ilink/login-machine.ts'
 import { forgetAccount, loadAccount, saveAccount, type StoredAccount } from './credentials.ts'
+import { parsePersonaCard } from './persona/card.ts'
 import { PersonaStore } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
 import { StickerLibrary } from './persona/stickers.ts'
@@ -156,6 +157,45 @@ class Coordinator {
     }))
   }
 
+  /** 读一张人格卡的原始 JSON；文件不存在时给出可读的提示。 */
+  async readPersona(id: string): Promise<{ ok: boolean; raw?: string; error?: string }> {
+    try {
+      return { ok: true, raw: await readFile(this.personaFile(id), 'utf8') }
+    } catch {
+      return { ok: false, error: '这个 id 还没有人格卡' }
+    }
+  }
+
+  /**
+   * 写一张人格卡。
+   *
+   * 先校验再落盘：坏卡写进去会让这个角色从列表里消失（store 会把它标成 broken），
+   * 用户很难看出是自己刚才的编辑造成的。
+   */
+  async writePersona(id: string, raw: string): Promise<{ ok: boolean; issues: string[]; warnings: string[] }> {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw) as unknown
+    } catch (error) {
+      return { ok: false, issues: [`JSON 解析失败：${error instanceof Error ? error.message : String(error)}`], warnings: [] }
+    }
+    const result = parsePersonaCard(parsed, id)
+    if (!result.ok) {
+      return { ok: false, issues: result.issues.map(issue => `${issue.path || '<root>'}: ${issue.message}`), warnings: [] }
+    }
+    const dir = join(this.dataDir, 'personas', id)
+    await mkdir(dir, { recursive: true })
+    const target = this.personaFile(id)
+    const temp = `${target}.${String(process.pid)}.tmp`
+    await writeFile(temp, JSON.stringify(parsed, null, 2), 'utf8')
+    await rename(temp, target)
+    return { ok: true, issues: [], warnings: result.warnings.map(warning => `${warning.path}: ${warning.message}`) }
+  }
+
+  private personaFile(id: string): string {
+    return join(this.dataDir, 'personas', id, 'persona.json')
+  }
+
   /** 已知聊天（设置里出现过的 + 这次运行聊过的）。 */
   async chats(): Promise<ChatSummary[]> {
     const peers = new Set<string>(await this.chatSettings.listPeers())
@@ -202,6 +242,8 @@ class Coordinator {
     personas: () => Promise<PersonaSummary[]>
     chats: () => Promise<ChatSummary[]>
     setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean; proactive?: boolean }) => Promise<ChatSummary>
+    readPersona: (id: string) => Promise<{ ok: boolean; raw?: string; error?: string }>
+    writePersona: (id: string, raw: string) => Promise<{ ok: boolean; issues: string[]; warnings: string[] }>
   } {
     return {
       status: async () => await this.status(),
@@ -212,6 +254,8 @@ class Coordinator {
       personas: async () => await this.personas(),
       chats: async () => await this.chats(),
       setChat: async patch => await this.setChat(patch),
+      readPersona: async id => await this.readPersona(id),
+      writePersona: async (id, raw) => await this.writePersona(id, raw),
     }
   }
 
@@ -448,6 +492,8 @@ function boot(ctx: Context, config: ConfigShape): void {
         connection.fetch.register({ path: `${PANEL_PREFIX}/personas`, methods: ['GET'], requestBody: 'buffered', fetch: async () => await panel.personas() }),
         connection.fetch.register({ path: `${PANEL_PREFIX}/chats`, methods: ['GET'], requestBody: 'buffered', fetch: async () => await panel.chats() }),
         connection.fetch.register({ path: `${PANEL_PREFIX}/chat`, methods: ['POST'], requestBody: 'buffered', fetch: async (request: Request) => await panel.setChat(request) }),
+        connection.fetch.register({ path: `${PANEL_PREFIX}/persona`, methods: ['GET'], requestBody: 'buffered', fetch: async (request: Request) => await panel.readPersona(request) }),
+        connection.fetch.register({ path: `${PANEL_PREFIX}/persona/save`, methods: ['POST'], requestBody: 'buffered', fetch: async (request: Request) => await panel.writePersona(request) }),
       ]
       return () => { for (const dispose of disposers) dispose() }
     })
