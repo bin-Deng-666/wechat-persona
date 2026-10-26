@@ -25,6 +25,11 @@ export interface Config {
   /** 诊断日志保留天数。 */
   logRetentionDays: Volatile<number>
   /**
+   * 逐条记录入站报文形状，用于调查协议未公开场景（例如群聊）。
+   * 默认关闭；开启后每条消息都多一行日志，但不会记录 context_token 等凭据。
+   */
+  diagnoseMessages: Volatile<boolean>
+  /**
    * 这个通道创建的会话的权限预设。
    *
    * - `workspace-write`：工作区内可写，敏感操作要审批（默认）
@@ -45,6 +50,7 @@ export const Config = z.object({
   allow: z.string().default('').volatile(),
   defaultPersona: z.string().default('default').volatile(),
   logRetentionDays: z.number().min(0).default(7).volatile(),
+  diagnoseMessages: z.boolean().default(false).volatile(),
   // 默认保守：审批卡还没接上时，用户至少能看见「卡住了」而不是被静默执行。
   permission: z
     .union([z.const('read-only'), z.const('workspace-write'), z.const('danger-full-access')])

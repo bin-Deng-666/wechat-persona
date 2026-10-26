@@ -10,6 +10,9 @@ Versions before `0.2.0` are development builds and were never published.
 
 ### Added
 
+- 入站报文诊断：无法识别、或带未知字段的报文会记下形状（id、类型、未知字段名），
+  不再静默丢弃；用 `diagnoseMessages` 可逐条记录。只记字段与 id，不记 `context_token`
+  等凭据。
 - Conversation evaluation accepts `--persona` and `--cases` for actual cards.
 
 ## [0.3.0-dev.0] - 2026-10-26

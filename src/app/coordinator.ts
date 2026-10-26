@@ -498,6 +498,8 @@ export class Coordinator {
         }),
         // 一轮跑完时会话一定已落盘，这时把它归入工作区最稳。
         onSessionSettled: sessionId => { void grouper.attach(sessionId) },
+        // 调查协议未公开场景时打开：逐条记入站报文形状。
+        diagnoseMessages: this.config.diagnoseMessages.get(),
       })
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。

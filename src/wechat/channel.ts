@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
 import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import { asWeixinMessage, BusinessError, ERRCODE_SESSION_EXPIRED, type ApiClient } from '../ilink/api.ts'
+import { describeInbound, needsDiagnosis, summarizeRaw } from '../ilink/diagnose.ts'
 import type { MessageItem, WeixinMessage } from '../ilink/types.ts'
 import type { AccessPolicy } from './access.ts'
 import type { ActivityStore } from '../chat/activity.ts'
@@ -49,6 +50,8 @@ export interface ChannelOptions {
   compact?: (peerId: string, generation: number, signal?: AbortSignal) => Promise<CompactOutcome>
   /** 一轮结束时把会话 id 交给宿主（用于归入工作区）；缺失表示不需要。 */
   onSessionSettled?: (sessionId: string) => void
+  /** 逐条记录入站报文形状；用来调查协议未公开场景（例如群聊）。 */
+  diagnoseMessages?: boolean
   permissionLabel?: string
   typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
   approvals?: { answer: (peerId: string, text: string) => boolean; cancel: (peerId: string, why?: string) => void }
@@ -152,10 +155,25 @@ export class Channel {
   async handle(raw: unknown, receiveOnly = false): Promise<void> {
     if (this.closed) return
     this.subscribeReplies()
+    // 诊断打在「校验之前」：协议没公开的场景（例如群聊）往往就是在这里被静默丢掉的。
+    const shape = describeInbound(raw)
+    if (shape === undefined) {
+      this.options.report?.('忽略了一条无法识别的入站报文', { raw: summarizeRaw(raw) })
+      return
+    }
+    const verbose = this.options.diagnoseMessages === true
+    if (needsDiagnosis(shape, verbose)) this.options.report?.('入站报文形状', shape)
     const message = asWeixinMessage(raw)
-    if (!message || (message.message_type !== undefined && message.message_type !== 1)) return
+    if (!message || (message.message_type !== undefined && message.message_type !== 1)) {
+      if (verbose) this.options.report?.('忽略了非用户消息', { messageType: shape.messageType, fromId: shape.fromId })
+      return
+    }
     const peerId = message.from_user_id ?? ''
-    if (!peerId || !this.options.access.admits(peerId)) return
+    if (!peerId) return
+    if (!this.options.access.admits(peerId)) {
+      this.options.report?.('拒绝了一个不在名单里的 peer', { peerId, toId: shape.toId, messageType: shape.messageType, itemTypes: shape.itemTypes })
+      return
+    }
     const conversation = await this.conversation(peerId)
     await this.track(conversation.accept(async () => {
       const received = await this.history.receive(peerId, conversation.generation, message, textOf(message), (this.options.now ?? Date.now)())
