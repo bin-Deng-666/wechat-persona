@@ -17,8 +17,8 @@
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 | 骨架：目录、构建、配置、文档 | ✅ 完成（profile 实测待做） |
-| M1 | iLink 协议层 + 扫码登录 + 长轮询收发文本 | 未开始 |
-| M2 | 人格聊天：人格卡、per-chat 设置、上下文、图片理解 | 未开始 |
+| M1 | iLink 协议层 + 扫码登录 + 长轮询收发文本 | ✅ 代码完成，待真实扫码验证 |
+| M2 | 人格聊天：人格卡、per-chat 设置、上下文、图片理解 | 人格注入已完成；图片与 per-chat 设置待做 |
 | M3 | 表情包、主动搭话、记忆摘要 | 未开始 |
 
 进度与验收标准见 [docs/roadmap.md](docs/roadmap.md)。
@@ -38,6 +38,19 @@ wechat-persona/
 ├── test/                 纯逻辑单测（node --test）
 └── scripts/              本地开发脚本
 ```
+
+## 安装（DSH 桌面版）
+
+`desktop` profile 由桌面应用独占管理，命令行 `dsh plugin --profile desktop add` 会被拒绝，
+所以走 GUI：
+
+1. `npm run build && npm pack`，得到 `dsh-wechat-persona-0.1.0-dev.0.tgz`
+2. GUI → **Plugins** → 安装本地包 → 选这个 tgz
+3. **完全退出并重开** DSH（bundle 层只在启动时组装）
+4. 打开 `http://127.0.0.1:<port>/api/persona-wechat/panel`，用手机微信扫码
+5. 扫码那个微信号就是你的 bot，在微信里直接发消息
+
+> 同一时间只能有一个 iLink 客户端登录同一个 bot；如果同时装了 `dsh-channel-wechat`，两个会互相踢。
 
 ## 本地开发
 

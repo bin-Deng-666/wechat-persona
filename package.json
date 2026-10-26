@@ -13,19 +13,12 @@
   "types": "lib/index.d.ts",
   "exports": {
     ".": "./lib/index.js",
-    "./client": "./lib/client.js",
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-settings"
-      ]
     }
   },
   "files": [
@@ -59,5 +52,8 @@
     "@deepseek-ai/dsh-llm": "^0.2.0-rc.1",
     "@deepseek-ai/dsh-session": "^0.2.0-rc.1",
     "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dependencies": {
+    "qrcode-generator": "^2.0.4"
   }
 }

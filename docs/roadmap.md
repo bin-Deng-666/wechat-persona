@@ -16,12 +16,13 @@
 
 ## M1 · 通道打通
 
-- [ ] iLink：`get_bot_qrcode` / `get_qrcode_status` 登录状态机（含验证码分支）
-- [ ] 长轮询 `getupdates` + 游标持久化 + 去重
-- [ ] `sendmessage`（文本）+ 回执校验 + `ret: -2` 退避
-- [ ] `sendtyping` 输入状态
-- [ ] GUI：扫码页、登录态、退出登录
-- [ ] `bridge`：peer → DSH 会话 → `agent.followup()` → 回复
+- [x] iLink：`get_bot_qrcode` / `get_qrcode_status` 登录状态机（含验证码分支）
+- [x] 长轮询 `getupdates` + 游标持久化 + 去重
+- [x] `sendmessage`（文本）+ 回执校验 + `ret: -2` 退避
+- [ ] `sendtyping` 输入状态（接口已封装，通道里还没接）
+- [x] GUI：扫码页、登录态、退出登录、人格列表
+- [x] `bridge`：peer → DSH 会话 → `agent.followup()` → 回复
+- [ ] 真机验证：桌面版安装后扫码，微信收发通过
 
 **验收**：微信发「你好」，DSH 回复原样回到微信；进程重启后不重复回复历史消息。
 
