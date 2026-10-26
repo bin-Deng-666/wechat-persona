@@ -519,14 +519,15 @@ export class Coordinator {
       void channel.run(cursor).catch((error: unknown) => { this.report('通道停止', { error: String(error) }) })
 
       // 把上一轮运行留下的会话从「未分组」补齐到工作区。
-      // 工作区服务可能比本插件晚就绪，所以立即扫一次，过几秒再补一次。
-      const sweepOnce = async (): Promise<void> => {
+      // 工作区服务比本插件晚就绪，所以立即扫一次、过几秒再扫一次；
+      // 只有第二次仍拿不到服务，才判定为「宿主没有工作区」。
+      const sweepOnce = async (reportUnavailable: boolean): Promise<void> => {
         const count = await grouper.sweep()
         if (count > 0) this.report('已有会话归入工作区', { title: '微信', count })
-        else if (!grouper.available) this.report('宿主没有工作区注册表：微信会话会显示在「未分组」下')
+        else if (reportUnavailable && !grouper.available) this.report('宿主没有工作区注册表：微信会话会显示在「未分组」下')
       }
-      void sweepOnce()
-      const groupTimer = setTimeout(() => { void sweepOnce() }, 5_000)
+      void sweepOnce(false)
+      const groupTimer = setTimeout(() => { void sweepOnce(true) }, 5_000)
       groupTimer.unref?.()
       this.groupTimer = groupTimer
 
