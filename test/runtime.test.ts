@@ -352,3 +352,57 @@ describe('主动搭话', () => {
     assert.equal(await channel.poke('wxid-owner'), false)
   })
 })
+
+
+describe('回复里的表情标记', () => {
+  function channelWithSticker(sendSticker: (peer: string, name: string) => Promise<boolean>) {
+    const { sessions } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: string[] = []
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      sendSticker,
+    })
+    return { channel, emit, sent }
+  }
+
+  const reply = (text: string) => ({
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text }] } },
+  })
+
+  it('表情发成功时，只把剩余文字发出去', async () => {
+    const names: string[] = []
+    const { channel, emit, sent } = channelWithSticker(async (_peer, name) => { names.push(name); return true })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', reply('好啊 [表情:开心]'))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(names, ['开心'])
+    assert.deepEqual(sent, ['好啊'])
+  })
+
+  it('表情发失败时退回纯文字（不留标记）', async () => {
+    const { channel, emit, sent } = channelWithSticker(async () => false)
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', reply('[表情:没有这张] 算了'))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(sent, ['算了'])
+  })
+
+  it('只有表情、没有文字时，成功后不再发空消息', async () => {
+    const { channel, emit, sent } = channelWithSticker(async () => true)
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', reply('[表情:开心]'))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(sent, [])
+  })
+})

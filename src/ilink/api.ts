@@ -135,6 +135,41 @@ export interface SendTextParams extends RequestOptions {
   contextToken?: string
 }
 
+export interface SendImageParams extends RequestOptions {
+  token: string
+  to: string
+  /** CDN 返回的下载参数。 */
+  encryptQueryParam: string
+  /** AES key 的 base64（发送方声明）。 */
+  aesKeyBase64: string
+  /** 密文长度（服务端会核对）。 */
+  ciphertextSize: number
+  /** 本轮回传的会话令牌。 */
+  contextToken?: string
+}
+
+export interface GetUploadUrlParams extends RequestOptions {
+  token: string
+  /** CDN 上的对象名。 */
+  filekey: string
+  /** 1 图片 / 2 视频 / 3 文件 / 4 语音。 */
+  mediaType: number
+  to: string
+  /** 明文长度。 */
+  rawsize: number
+  /** 明文 MD5（小写 hex）。 */
+  rawfilemd5: string
+  /** 补位后的密文长度，服务端会核对。 */
+  filesize: number
+  /** AES key 的小写 hex。 */
+  aeskey: string
+}
+
+export interface GetUploadUrlResult {
+  uploadParam: string | undefined
+  uploadFullUrl: string | undefined
+}
+
 export interface GetConfigParams extends RequestOptions {
   token: string
   userId: string
@@ -154,6 +189,10 @@ export interface ApiClient {
   getUpdates(params: GetUpdatesParams): Promise<GetUpdatesResult>
   /** 发一条文本。 */
   sendText(params: SendTextParams): Promise<void>
+  /** 发一张图片（图片需先上传到 CDN）。 */
+  sendImage(params: SendImageParams): Promise<void>
+  /** 申请一个上传地址与元数据。 */
+  getUploadUrl(params: GetUploadUrlParams): Promise<GetUploadUrlResult>
   /** 取某个用户的 typing ticket（空串表示服务端没给）。 */
   getConfig(params: GetConfigParams): Promise<string>
   /** 上报输入状态。 */
@@ -282,6 +321,64 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       // HTTP 200 带错误码仍然是失败；`-14` 尤其致命。
       const code = parsed.errcode ?? parsed.ret
       if (typeof code === 'number' && code !== 0) throw new BusinessError('sendmessage', code, parsed.errmsg ?? '')
+    },
+
+    async getUploadUrl(params) {
+      const raw = await client.post({
+        ...params,
+        body: JSON.stringify({
+          filekey: params.filekey,
+          media_type: params.mediaType,
+          to_user_id: params.to,
+          rawsize: params.rawsize,
+          rawfilemd5: params.rawfilemd5,
+          filesize: params.filesize,
+          // 明确不要缩略图：要了却不传，服务端会等第二个对象。
+          no_need_thumb: true,
+          aeskey: params.aeskey,
+          base_info: buildBaseInfo({ channelVersion, ...(botAgent === undefined ? {} : { botAgent }) }),
+        }),
+        endpoint: 'ilink/bot/getuploadurl',
+        label: 'getuploadurl',
+      })
+      const parsed = JSON.parse(raw) as { upload_param?: string; upload_full_url?: string }
+      return { uploadParam: parsed.upload_param, uploadFullUrl: parsed.upload_full_url }
+    },
+
+    async sendImage(params) {
+      const msg: Record<string, unknown> = {
+        from_user_id: '',
+        to_user_id: params.to,
+        client_id: randomUUID(),
+        message_type: 2,
+        message_state: 2,
+        item_list: [{
+          type: 2,
+          image_item: {
+            // 图片的 key 用 base64 原样带上；`mid_size` 是密文长度。
+            media: {
+              encrypt_query_param: params.encryptQueryParam,
+              aes_key: params.aesKeyBase64,
+              encrypt_type: 1,
+            },
+            mid_size: params.ciphertextSize,
+          },
+        }],
+      }
+      if (params.contextToken !== undefined) msg['context_token'] = params.contextToken
+
+      const raw = await client.post({
+        ...params,
+        body: JSON.stringify({
+          msg,
+          base_info: buildBaseInfo({ channelVersion, ...(botAgent === undefined ? {} : { botAgent }) }),
+        }),
+        endpoint: 'ilink/bot/sendmessage',
+        label: 'sendmessage(image)',
+      })
+      const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
+      const code = parsed.errcode ?? parsed.ret
+      if (typeof code === 'number' && code !== 0) throw new BusinessError('sendmessage(image)', code, parsed.errmsg ?? '')
     },
 
     async getConfig(params) {

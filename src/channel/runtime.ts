@@ -20,6 +20,7 @@ import { PeerSessions, sessionIdFor } from '../bridge/session.ts'
 import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../persona/settings.ts'
 import { proactiveInstruction, shouldPoke } from './proactive.ts'
+import { parseStickerToken } from '../persona/stickers.ts'
 
 /** 一个已登录账号。 */
 export interface ChannelAccount {
@@ -57,6 +58,8 @@ export interface ChannelOptions {
   timeZone?: string
   /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
   settings?: ChatSettingsStore
+  /** 发一张本地表情；返回是否发出。缺失表示这个部署没有表情库。 */
+  sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
   prepareMedia?: (items: readonly MessageItem[]) => Promise<PreparedMedia>
 }
@@ -323,7 +326,26 @@ export class Channel {
       if (text === undefined) return
       const peerId = this.peerBySession.get(String(session.id))
       if (peerId === undefined) return
-      void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId), this.maxCharsFor(peerId))
+      const token = this.contextTokens.get(peerId)
+      const maxChars = this.maxCharsFor(peerId)
+
+      // 表情：模型写了 `[表情:名字]` 就先发图，再把剩下的文字发出去。
+      // 图没发成功就退化成文字，绝不让整条回复消失。
+      const sticker = parseStickerToken(text)
+      const sendSticker = this.options.sendSticker
+      if (sticker !== undefined && sendSticker !== undefined) {
+        void (async () => {
+          const sent = await sendSticker(peerId, sticker.name, token).catch((error: unknown) => {
+            this.options.report?.('表情发送失败', { name: sticker.name, error: String(error) })
+            return false
+          })
+          const rest = sent ? sticker.text : text.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
+          if (rest !== '') await this.options.replies.enqueue(peerId, rest, token, maxChars)
+        })()
+        return
+      }
+
+      void this.options.replies.enqueue(peerId, text, token, maxChars)
     })
   }
 }

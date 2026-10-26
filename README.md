@@ -18,8 +18,8 @@
 |---|---|---|
 | M0 | 骨架：目录、构建、配置、文档 | ✅ 完成（profile 实测待做） |
 | M1 | iLink 协议层 + 扫码登录 + 长轮询收发文本 | ✅ 代码完成，待真实扫码验证 |
-| M2 | 人格聊天：人格卡、per-chat 设置、上下文、图片理解 | 人格注入已完成；图片与 per-chat 设置待做 |
-| M3 | 表情包、主动搭话、记忆摘要 | 未开始 |
+| M2 | 人格聊天：人格卡、per-chat 设置、上下文、图片理解 | ✅ 完成（真机待验证） |
+| M3 | 表情发送、主动搭话 | ✅ 完成；记忆摘要未开始 |
 
 进度与验收标准见 [docs/roadmap.md](docs/roadmap.md)。
 
@@ -38,6 +38,20 @@ wechat-persona/
 ├── test/                 纯逻辑单测（node --test）
 └── scripts/              本地开发脚本
 ```
+
+## 数据长什么样
+
+```text
+<dataDir>/                    默认 data/wechat-persona（相对会话 cwd）
+├── account.json              登录凭据（0600，删掉即退出登录）
+├── cursor.json               每个账号的轮询游标（重启不重放）
+├── personas/<id>/persona.json  人格卡，见 docs/persona.md
+├── chats/<peer>/settings.json  每聊天：人格、是否回复、长度、是否主动
+└── stickers/<名字>.png|gif     表情库；模型写 [表情:名字] 就发这张
+```
+
+表情标记的约定：回复里写 `[表情:开心]`，通道会发 `stickers/开心.png`，
+再把标记之外的文字发出去；名字找不到或发送失败就退回纯文字。
 
 ## 安装（DSH 桌面版）
 

@@ -18,6 +18,8 @@ import type { LoginCredentials } from './ilink/login-machine.ts'
 import { forgetAccount, loadAccount, saveAccount, type StoredAccount } from './credentials.ts'
 import { PersonaStore } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
+import { StickerLibrary } from './persona/stickers.ts'
+import { sendImage } from './ilink/send-image.ts'
 import { createAccessPolicy } from './bridge/access.ts'
 import { ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
@@ -77,6 +79,7 @@ class Coordinator {
   private readonly dataDir: string
   private readonly store: PersonaStore
   private readonly chatSettings: ChatSettingsStore
+  private readonly stickers: StickerLibrary
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
   private registry: AgentsLike | undefined
@@ -96,6 +99,7 @@ class Coordinator {
     }
     this.store = new PersonaStore(join(dataDir, 'personas'))
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
+    this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
       renderQr: renderQrSvg,
@@ -257,6 +261,7 @@ class Coordinator {
         personas: this.store,
         defaultPersona: this.config.defaultPersona.get(),
         settings: this.chatSettings,
+        sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         replies,
         events: this.ctx as never,
         report: this.report,
@@ -318,6 +323,26 @@ class Coordinator {
       },
       report: this.report,
     })
+  }
+
+  /** 发一张本地表情：找到文件、读出来、走图片发送。 */
+  private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined): Promise<boolean> {
+    if (this.account === undefined) return false
+    const file = await this.stickers.find(stickerName)
+    if (file === undefined) {
+      this.report('表情库里没有这张，按文字发', { name: stickerName })
+      return false
+    }
+    const data = await readFile(file)
+    await sendImage({
+      api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
+      baseUrl: this.account.baseUrl,
+      token: this.account.botToken,
+      to: peerId,
+      ...(contextToken === undefined ? {} : { contextToken }),
+      data,
+    })
+    return true
   }
 
   private modelSelection(): { provider?: string; model?: string } {
