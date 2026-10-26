@@ -16,6 +16,9 @@ import type { MessageItem, WeixinMessage } from '../ilink/types.ts'
 import type { AccessPolicy } from '../bridge/access.ts'
 import type { ActivityStore } from '../bridge/activity.ts'
 import { DEFAULT_REPLY_PLAN, resolvePlan, type ReplyPlan } from '../bridge/bubbles.ts'
+import { extractMemoryMarkers, type PeerMemory } from '../bridge/memory.ts'
+import { expandLocationTokens } from '../bridge/text.ts'
+import { MENU_TTL_MS, parseChoice, renderMenu, resolveChoice, type MenuPanel, type MenuView } from './menu.ts'
 import { composeInboundText } from '../bridge/prompt.ts'
 import type { PreparedMedia } from '../bridge/media.ts'
 import type { ReplyQueue } from '../bridge/reply.ts'
@@ -25,6 +28,7 @@ import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../persona/settings.ts'
 import { proactiveInstruction, shouldPoke } from './proactive.ts'
 import { parseStickerToken } from '../persona/stickers.ts'
+import { normalizeStickerName } from '../persona/sticker-inbox.ts'
 import { formatAgo, formatHelp, formatNewChat, formatPersona, formatStatus, formatStyle, formatUnknown, parseCommand } from './commands.ts'
 import type { PeerGenerations } from '../bridge/generations.ts'
 
@@ -84,9 +88,18 @@ export interface ChannelOptions {
   /** 发一张本地表情；返回是否发出。缺失表示这个部署没有表情库。 */
   sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
-  prepareMedia?: (items: readonly MessageItem[]) => Promise<PreparedMedia>
+  prepareMedia?: (items: readonly MessageItem[], peerId?: string) => Promise<PreparedMedia>
   /** 每个 peer 的最后活跃时间；缺省只存内存（重启后主动搭话会失效）。 */
   activity?: ActivityStore
+  /** 跨会话记忆；缺省表示不支持「记住」。 */
+  memory?: PeerMemory
+  /** 当前模型 id，只用于设置卡片展示。 */
+  modelLabel?: string
+  /** 收表情：把最近一张入站图片收进表情库。 */
+  stickerInbox?: {
+    adopt: (peerId: string, name: string) => Promise<string | undefined>
+    latest: (peerId: string) => Promise<string | undefined>
+  }
   /** 本地表情库里的名字，注入第一轮人设；缺省表示没有表情库。 */
   stickerNames?: () => Promise<readonly string[]>
   /** 连发几条消息的合并窗口，毫秒；0 表示每条都单独成轮。 */
@@ -143,6 +156,8 @@ export class Channel {
   private readonly pending = new Map<string, PendingInbound>()
   /** peer → 这个聊天的发送形态（人格卡 + 聊天设置算出来的）。 */
   private readonly plans = new Map<string, ReplyPlan>()
+  /** peer → 正在展示的设置卡片。 */
+  private readonly menus = new Map<string, { panel: MenuPanel; at: number }>()
   /** peer → 「还在弄」提示的定时器。 */
   private readonly progress = new Map<string, NodeJS.Timeout>()
   /** 已经投递、还没等到 turn/end 的 peer。 */
@@ -271,6 +286,9 @@ export class Channel {
     // 把「1」当成普通消息喂进去，等于让它自己批自己。
     if (this.options.approvals?.answer(peerId, rawText) === true) return
 
+    // 设置卡片打开时，单个数字就是一次点击。
+    if (await this.menuAnswer(peerId, rawText)) return
+
     // 命令先于一切：/help 不该进模型，/new 更不能作为一条消息喂给旧会话。
     const command = parseCommand(rawText)
     if (command !== undefined) {
@@ -291,6 +309,163 @@ export class Channel {
     // 窗口为 0（测试或「每条都单独成轮」的部署）时同步投递，别把 Promise 丢掉。
     if (immediate !== undefined) await immediate
   }
+  // ---------------------------------------------------------------- 设置卡片
+
+  /** 打开设置卡片（`/menu`）。 */
+  async openMenu(peerId: string, panel: MenuPanel = 'root', contextToken?: string): Promise<void> {
+    this.menus.set(peerId, { panel, at: (this.options.now ?? Date.now)() })
+    const view = await this.menuView(peerId)
+    await this.answer(peerId, renderMenu(panel, view), contextToken)
+  }
+
+  /**
+   * 把一条消息当作卡片点击。
+   *
+   * @returns 被消费掉就 true；不是点击（或卡片过期）时 false，消息照常处理。
+   */
+  private async menuAnswer(peerId: string, text: string): Promise<boolean> {
+    const state = this.menus.get(peerId)
+    if (state === undefined) return false
+    const now = (this.options.now ?? Date.now)()
+    if (now - state.at > MENU_TTL_MS) {
+      this.menus.delete(peerId)
+      return false
+    }
+    const choice = parseChoice(text)
+    if (choice === undefined) {
+      // 用户开始说别的事：收起卡片，别把这句话吞掉。
+      this.menus.delete(peerId)
+      return false
+    }
+    this.menus.delete(peerId)
+    await this.applyChoice(peerId, state.panel, choice, this.contextTokens.get(peerId))
+    return true
+  }
+
+  private async applyChoice(peerId: string, panel: MenuPanel, choice: number, contextToken: string | undefined): Promise<void> {
+    const resolved = resolveChoice(panel, choice)
+    if (resolved.kind === 'close') {
+      await this.answer(peerId, '好，设置先收起来。发 /menu 再打开。', contextToken)
+      return
+    }
+    if (resolved.kind === 'panel') {
+      await this.openMenu(peerId, resolved.panel, contextToken)
+      return
+    }
+    if (resolved.kind === 'unknown') {
+      await this.openMenu(peerId, panel, contextToken)
+      return
+    }
+
+    const settings = this.options.settings
+    const snapshot = await this.ensureSnapshot()
+    const current = await this.settingsFor(peerId)
+    const card = PersonaStore.resolve(current.personaId ?? this.options.defaultPersona, snapshot)
+
+    switch (resolved.action) {
+      case 'toggle-proactive': {
+        if (settings === undefined) break
+        const next = { ...current, proactive: !current.proactive }
+        await settings.save(peerId, next)
+        if (next.proactive && !card.proactive.enabled) {
+          await this.answer(peerId, `这个聊天打开了主动，但人格卡「${card.name}」的 proactive.enabled 还是 false，所以仍然不会开口。`, contextToken)
+        }
+        break
+      }
+      case 'new-chat': {
+        if (this.options.generations === undefined) {
+          await this.answer(peerId, '这个部署没有开启多段对话。', contextToken)
+          return
+        }
+        await this.options.generations.bump(peerId)
+        this.warmed.delete(peerId)
+        break
+      }
+      case 'sticker-library': {
+        // 只是展示：表情的发送仍由模型在回复里写 [表情:名字] 决定。
+        const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+        await this.answer(peerId, names.length === 0 ? '表情库是空的：把图片放进 stickers/ 目录就能用。' : `表情库（${String(names.length)} 张）：\n${names.join('、')}`, contextToken)
+        return
+      }
+      case 'clear-memory': {
+        await this.options.memory?.clear(peerId)
+        await this.answer(peerId, '记忆清空了。', contextToken)
+        break
+      }
+      case 'split-sentence':
+      case 'split-paragraph':
+      case 'split-none': {
+        if (settings === undefined) break
+        const split: ChatSettings['split'] =
+          resolved.action === 'split-sentence' ? 'sentence' : resolved.action === 'split-paragraph' ? 'paragraph' : 'none'
+        const next = { ...current, split }
+        await settings.save(peerId, next)
+        this.plans.set(peerId, resolvePlan(card, next))
+        break
+      }
+      case 'max-chars-200': {
+        if (settings === undefined) break
+        const next = { ...current, maxChars: 200 }
+        await settings.save(peerId, next)
+        this.plans.set(peerId, resolvePlan(card, next))
+        break
+      }
+      case 'style-reset': {
+        if (settings === undefined) break
+        const next = { ...current, maxChars: undefined, split: undefined }
+        await settings.save(peerId, next)
+        this.plans.set(peerId, resolvePlan(card, next))
+        break
+      }
+      case 'model-default': {
+        // 目前只能跟随桌面端：DSH 没有给插件「换某个会话的模型」的口子。
+        await this.answer(peerId, '模型跟随桌面端的默认选择，聊天里暂时改不了。', contextToken)
+        return
+      }
+      default: {
+        const match = /^persona-(\d+)$/u.exec(resolved.action)
+        if (match !== null && settings !== undefined) {
+          const index = Number(match[1]) - 1
+          const picked = [...snapshot.personas.values()][index]
+          if (picked !== undefined) {
+            await settings.save(peerId, { ...current, personaId: picked.card.id })
+            this.warmed.delete(peerId)
+          }
+        }
+      }
+    }
+    await this.openMenu(peerId, 'root', contextToken)
+  }
+
+  /** 组装卡片展示所需的当前状态。 */
+  private async menuView(peerId: string): Promise<MenuView> {
+    const snapshot = await this.ensureSnapshot()
+    const settings = await this.settingsFor(peerId)
+    const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
+    const plan = resolvePlan(card, settings)
+    const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+    return {
+      personaId: card.id,
+      personaName: card.name,
+      personaChoices: [...snapshot.personas.values()].map(persona => ({ id: persona.card.id, name: persona.card.name })),
+      model: this.options.modelLabel ?? '',
+      memoryCount: this.options.memory?.get(peerId).length ?? 0,
+      memoryFacts: this.options.memory?.get(peerId) ?? [],
+      proactive: settings.proactive,
+      maxChars: plan.softChars,
+      split: plan.splitMode,
+      overridden: settings.maxChars !== undefined || settings.split !== undefined,
+      canSwitchModel: false,
+      stickerCount: names.length,
+    }
+  }
+
+  /** 一条纯文本回复（走正常队列，限流/分条都复用）。 */
+  private async answer(peerId: string, text: string, contextToken: string | undefined): Promise<void> {
+    const plan = this.plans.get(peerId) ?? DEFAULT_REPLY_PLAN
+    await this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' })
+  }
+
   /** 读这个聊天的设置；没有设置仓库时用默认值。 */
   private async settingsFor(peerId: string): Promise<ChatSettings> {
     return this.options.settings === undefined ? DEFAULT_CHAT_SETTINGS : await this.options.settings.get(peerId)
@@ -353,12 +528,14 @@ export class Channel {
       const plan = resolvePlan(card, settings)
       this.plans.set(peerId, plan)
 
+      const memory = this.options.memory?.lineFor(peerId)
       const text = composeInboundText({
         card,
         peer: peerId,
         text: pending.texts.join('\n'),
         first,
         ...(first ? await this.stickerHint() : {}),
+        ...(memory === undefined ? {} : { memory }),
         ...(this.options.timeZone === undefined ? {} : { timeZone: this.options.timeZone }),
         ...(this.options.now === undefined ? {} : { now: new Date(this.options.now()) }),
       })
@@ -370,7 +547,7 @@ export class Channel {
       let prepared: PreparedMedia = { parts: [], notes: [] }
       if (this.options.prepareMedia !== undefined && pending.items.length > 0) {
         try {
-          prepared = await this.options.prepareMedia(pending.items)
+          prepared = await this.options.prepareMedia(pending.items, peerId)
         } catch (error) {
           this.options.report?.('媒体预处理失败', { error: String(error) })
         }
@@ -516,6 +693,36 @@ export class Channel {
         const current = await settings.get(peerId)
         await settings.save(peerId, { ...current, personaId: found.id })
         reply(formatPersona(found.id, choices, found))
+        return
+      }
+
+      case '表情': {
+        const sub = command.args[0] ?? ''
+        if (sub === '收' || sub === '收下') {
+          const name = normalizeStickerName(command.args.slice(1).join(' '))
+          if (name === undefined) {
+            reply('用法：/表情 收 名字（名字不超过 24 字，不能带空格和方括号）')
+            return
+          }
+          if (this.options.stickerInbox === undefined) {
+            reply('这个部署没有表情库目录。')
+            return
+          }
+          const saved = await this.options.stickerInbox.adopt(peerId, name)
+          reply(saved === undefined
+            ? '最近没有可收的图：先发一张图给我，再说 /表情 收 名字。'
+            : `收好了：${saved}。之后它会用 [表情:${name}] 发这张。`)
+          return
+        }
+        const names = this.options.stickerNames === undefined ? [] : await this.options.stickerNames()
+        reply(names.length === 0
+          ? '表情库是空的。把图片放进 stickers/ 目录，或先发图再说 /表情 收 名字。'
+          : `表情库（${String(names.length)} 张）：\n${names.join('、')}`)
+        return
+      }
+
+      case 'menu': {
+        await this.openMenu(peerId, 'root', contextToken)
         return
       }
 
@@ -710,12 +917,23 @@ export class Channel {
       // 有正式回答就说明这轮还活着，别再补「还在弄」。
       this.clearProgress(peerId)
       this.turnActive.delete(peerId)
+      // 「记住」标记是给通道看的：先摘掉再发，用户不该看到它。
+      const recalled = extractMemoryMarkers(text)
+      if (recalled.facts.length > 0) {
+        void this.options.memory?.remember(peerId, recalled.facts).catch((error: unknown) => {
+          this.options.report?.('记忆写入失败', { error: String(error) })
+        })
+      }
+      // 位置：协议没有位置消息，只能展开成「名字 + 地图链接」。
+      const body = expandLocationTokens(recalled.text)
+      if (body === '') return
+
       const token = this.contextTokens.get(peerId)
       const plan = this.plans.get(peerId)
 
       // 表情：模型写了 `[表情:名字]` 就先发图，再把剩下的文字发出去。
       // 图没发成功就退化成文字，绝不让整条回复消失。
-      const sticker = parseStickerToken(text)
+      const sticker = parseStickerToken(body)
       const sendSticker = this.options.sendSticker
       if (sticker !== undefined && sendSticker !== undefined) {
         void (async () => {
@@ -723,13 +941,13 @@ export class Channel {
             this.options.report?.('表情发送失败', { name: sticker.name, error: String(error) })
             return false
           })
-          const rest = sent ? sticker.text : text.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
+          const rest = sent ? sticker.text : body.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
           if (rest !== '') await this.options.replies.enqueue(peerId, rest, token, plan)
         })()
         return
       }
 
-      void this.options.replies.enqueue(peerId, text, token, plan)
+      void this.options.replies.enqueue(peerId, body, token, plan)
     })
   }
 

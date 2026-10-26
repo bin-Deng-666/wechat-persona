@@ -25,6 +25,8 @@ export const COMMANDS: readonly { name: string; usage: string; description: stri
   { name: 'persona', usage: '/persona [id]', description: '查看或切换这个聊天的人格' },
   { name: 'style', usage: '/style [字数|sentence|paragraph|none|reset]', description: '看或改回答的分条方式' },
   { name: 'stop', usage: '/stop', description: '打断正在跑的这一轮' },
+  { name: 'menu', usage: '/menu', description: '打开设置卡片（人格/模型/记忆/主动/分条）' },
+  { name: '表情', usage: '/表情 [收 名字]', description: '看表情库，或把对方刚发的图收进库里' },
 ]
 
 /**

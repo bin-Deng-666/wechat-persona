@@ -14,6 +14,21 @@
 
 import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
 
+/**
+ * 一条回复「想一下再发」的停顿。
+ *
+ * 秒回是机器味最重的地方：人不会在 200ms 内打出一段话。时长随长度增长，
+ * 但封顶 2.5 秒——再久就变成「卡住了」，比秒回更像故障。
+ *
+ * @param text - 要发的内容。
+ * @param random - 随机源，测试用。
+ */
+export function humanThinkingMs(text: string, random: () => number = Math.random): number {
+  const base = 350 + Math.min(text.length, 200) * 12
+  const jitter = 0.8 + random() * 0.4
+  return Math.round(Math.min(2_500, base * jitter))
+}
+
 /** 服务端用来要求「慢一点」的返回码。 */
 export const THROTTLE_CODE = -2
 
@@ -97,6 +112,12 @@ export interface ReplyQueueOptions {
   onChunk?: (peerId: string, index: number, total: number) => void
   /** 某个 peer 的队列排空（发完或放弃）时回调；用来收「正在输入」。 */
   onDrain?: (peerId: string) => void
+  /**
+   * 第一条气泡之前的「思考」停顿，毫秒。
+   *
+   * 秒回是机器味最重的地方：人打字需要时间，条越长越久。返回 0 表示不等。
+   */
+  thinkingMs?: (peerId: string, text: string) => number
   /** 测试注入的 sleep。 */
   sleep?: (ms: number) => Promise<void>
   /** 测试注入的时钟。 */
@@ -192,6 +213,8 @@ export class ReplyQueue {
     let throttleCount = 0
     let attempt = 0
 
+    const thinking = this.options.thinkingMs?.(item.peerId, item.text) ?? 0
+    if (thinking > 0) await sleep(thinking)
     for (const [index, chunk] of bubbles.entries()) {
       // 第二条起先等一个「人打字」的间隔：几条同时出现像刷屏，完全不留白又像卡了。
       if (index > 0) await sleep(plan.gapMs)

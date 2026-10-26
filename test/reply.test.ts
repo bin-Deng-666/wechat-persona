@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { extractAssistantText, isThrottled, ReplyQueue } from '../src/bridge/reply.ts'
+import { extractAssistantText, humanThinkingMs, isThrottled, ReplyQueue } from '../src/bridge/reply.ts'
 
 const textEvent = (text: string, extra: Record<string, unknown> = {}) => ({
   type: 'assistant/message',
@@ -154,5 +154,20 @@ describe('ReplyQueue', () => {
     await queue.whenIdle()
     assert.deepEqual(sent, ['a'])
     assert.equal(queue.isBusy('p1'), false)
+  })
+})
+
+describe('humanThinkingMs', () => {
+  it('随长度增长但有上限', () => {
+    assert.ok(humanThinkingMs('短', () => 1) < humanThinkingMs('x'.repeat(100), () => 1))
+    assert.ok(humanThinkingMs('x'.repeat(5_000), () => 1) <= 2_500)
+  })
+
+  it('有抖动，不是固定值', () => {
+    assert.notEqual(humanThinkingMs('hello', () => 0), humanThinkingMs('hello', () => 0.99))
+  })
+
+  it('不会为负或为 0', () => {
+    assert.ok(humanThinkingMs('', () => 0) > 0)
   })
 })

@@ -8,7 +8,7 @@
  * @module wechat-persona/persona/stickers
  */
 
-import { readdir } from 'node:fs/promises'
+import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 
 /** 支持的表情文件扩展名。 */
@@ -73,6 +73,26 @@ export class StickerLibrary {
   async find(name: string): Promise<string | undefined> {
     await this.load()
     return this.index?.get(name.normalize('NFC'))
+  }
+
+  /**
+   * 把一张外部图片收进表情库。
+   *
+   * @param name - 表情名（不含扩展名）。
+   * @param source - 源文件绝对路径。
+   * @returns 落盘的文件名；名字或扩展名不合法时 undefined。
+   */
+  async adopt(name: string, source: string): Promise<string | undefined> {
+    const extension = extname(source).toLowerCase()
+    if (!STICKER_EXTENSIONS.has(extension)) return undefined
+    const clean = name.trim()
+    if (clean === '' || /[\/:：\[\]]/u.test(clean)) return undefined
+    await mkdir(this.root, { recursive: true, mode: 0o700 })
+    const target = join(this.root, `${clean}${extension}`)
+    await copyFile(source, target)
+    // 索引是懒加载的：收下新图后必须重扫，否则 [表情:名字] 仍然找不到它。
+    this.index = undefined
+    return `${clean}${extension}`
   }
 
   /** 已知表情名（GUI/诊断用）。 */

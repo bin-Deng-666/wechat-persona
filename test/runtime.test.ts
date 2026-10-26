@@ -691,3 +691,115 @@ describe('交付文件', () => {
     assert.ok(sent.some(text => text.includes('文件太大')), JSON.stringify(sent))
   })
 })
+
+describe('设置卡片', () => {
+  function setup() {
+    const { sessions, delivered } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: string[] = []
+    const saved: Record<string, unknown>[] = []
+    let current = { enabled: true, proactive: false }
+    const settings = {
+      get: async () => current,
+      save: async (_peer: string, next: typeof current) => { current = next; saved.push(next); return next },
+    }
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      mergeWindowMs: 0,
+      progressAfterMs: 0,
+      settings: settings as never,
+    })
+    return { channel, sent, saved, delivered, emit }
+  }
+
+  it('/menu 发一张卡片', async () => {
+    const { channel, sent } = setup()
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    assert.equal(sent.length, 1)
+    assert.match(sent[0] ?? '', /设置/)
+    assert.match(sent[0] ?? '', /1 {2}人格/)
+  })
+
+  it('回数字就是一次点击：4 切主动开关', async () => {
+    const { channel, sent, saved } = setup()
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '4' } }] }))
+    assert.equal(saved.length, 1)
+    assert.equal(saved[0]?.['proactive'], true)
+    // 点完自动回到根卡片，能看到新状态。
+    assert.match(sent[sent.length - 1] ?? '', /4 {2}主动 · 开/)
+  })
+
+  it('非数字消息会收起卡片并照常进模型', async () => {
+    const { channel, sent, delivered } = setup()
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '帮我看看桌面' } }] }))
+    assert.equal(delivered.length, 1)
+    assert.match(delivered[0]?.text ?? '', /帮我看看桌面/)
+    assert.equal(sent.length, 1)
+  })
+
+  it('0 收起卡片', async () => {
+    const { channel, sent } = setup()
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '0' } }] }))
+    assert.match(sent[sent.length - 1] ?? '', /收起来/)
+  })
+
+  it('进人格面板后选序号会切换', async () => {
+    const { channel, sent, saved } = setup()
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '1' } }] }))
+    assert.match(sent[sent.length - 1] ?? '', /人格/)
+    // 这里的人格目录是空的：选一个不存在的序号只是回到根卡片，不能崩。
+    await channel.handle(userMessage({ message_id: 'm3', item_list: [{ type: 1, text_item: { text: '1' } }] }))
+    assert.match(sent[sent.length - 1] ?? '', /设置/)
+    assert.equal(saved.length, 0)
+  })
+})
+
+describe('记忆标记', () => {
+  it('标记不进聊天，但会被记住', async () => {
+    const { sessions } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: string[] = []
+    const remembered: string[][] = []
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      events,
+      report: () => {},
+      sleep: async () => {},
+      mergeWindowMs: 0,
+      progressAfterMs: 0,
+      memory: {
+        lineFor: () => undefined,
+        get: () => [],
+        remember: async (_peer: string, facts: readonly string[]) => { remembered.push([...facts]); return facts.length },
+        clear: async () => {},
+      } as never,
+    })
+    await channel.handle(userMessage({ message_id: 'm1' }))
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '记下了。[记住: 用户叫阿彬]' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(sent, ['记下了。'])
+    assert.deepEqual(remembered, [['用户叫阿彬']])
+  })
+})

@@ -117,3 +117,24 @@ function balanceFences(chunks: readonly string[]): string[] {
 
   return out
 }
+
+/** 位置标记：`[位置:31.23,121.47,外滩]`（纬度在前）。 */
+const LOCATION = /\[位置[:：]\s*(-?\d{1,3}(?:\.\d+)?)\s*[,，]\s*(-?\d{1,3}(?:\.\d+)?)\s*(?:[,，]\s*([^\]\n]{1,40}))?\]/gu
+
+/**
+ * 把位置标记换成一条带地图链接的文本。
+ *
+ * 协议里没有「位置消息」这种消息项（只有文本/图片/语音/文件/视频），
+ * 所以「发定位」只能是：名字 + 一条地图链接。微信客户端会把链接变成可点的。
+ *
+ * @param text - 模型回复。
+ * @returns 展开后的文本；没有标记时原样返回。
+ */
+export function expandLocationTokens(text: string): string {
+  return text.replace(LOCATION, (_whole, lat: string, lng: string, name?: string) => {
+    const label = name?.trim() ?? ''
+    const query = label === '' ? `${lat},${lng}` : `${label} ${lat},${lng}`
+    const url = `https://maps.apple.com/?ll=${encodeURIComponent(lat)},${encodeURIComponent(lng)}&q=${encodeURIComponent(query)}`
+    return `${label === '' ? '位置' : `📍 ${label}`}\n${url}`
+  })
+}

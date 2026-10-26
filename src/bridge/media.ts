@@ -29,6 +29,13 @@ export interface PrepareMediaOptions {
   supportsImage?: () => Promise<boolean>
   /** 诊断出口。 */
   report?: (line: string, detail?: unknown) => void
+  /**
+   * 收到图片时的旁路回调（原始字节）。
+   *
+   * 用在「收表情」：不管当前模型能不能看图、这条消息会不会被投递，
+   * 图片本身都值得留一份，用户才能说「把刚才那张收进表情库」。
+   */
+  onImage?: (input: { data: Uint8Array; mediaType: string; peerId?: string }) => Promise<void> | void
 }
 
 /** 一轮消息里附带的非文字内容。 */
@@ -50,10 +57,12 @@ const KIND_LABEL: Record<InboundMedia['kind'], string> = {
  * 构造一个「把这条消息的媒体变成内容块」的函数。
  * @param options - 附件存储、下载器与能力探测。
  */
-export function createMediaPreparer(options: PrepareMediaOptions): (items: readonly MessageItem[] | undefined) => Promise<PreparedMedia> {
+export function createMediaPreparer(
+  options: PrepareMediaOptions,
+): (items: readonly MessageItem[] | undefined, peerId?: string) => Promise<PreparedMedia> {
   const download = options.download ?? (async (media: InboundMedia) => await downloadMedia(media))
 
-  return async items => {
+  return async (items, peerId) => {
     const media = extractMedia(items)
     const parts: unknown[] = []
     const notes: string[] = []
@@ -88,11 +97,19 @@ export function createMediaPreparer(options: PrepareMediaOptions): (items: reado
       try {
         const bytes = await download(item)
         if (item.kind === 'image') {
+          const mediaType = sniffImageType(bytes)
+          if (mediaType !== undefined && options.onImage !== undefined) {
+            // 旁路失败不影响这条消息：收藏是附赠，不是主线。
+            try {
+              await options.onImage({ data: bytes, mediaType, ...(peerId === undefined ? {} : { peerId }) })
+            } catch (error) {
+              options.report?.('图片旁路处理失败', { error: String(error) })
+            }
+          }
           if (!(await canSeeImages())) {
             notes.push('（对方发来一张图片，但当前模型不支持看图）')
             continue
           }
-          const mediaType = sniffImageType(bytes)
           if (mediaType === undefined) {
             notes.push('（对方发来一张图片，但无法识别格式）')
             continue

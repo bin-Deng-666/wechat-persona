@@ -22,12 +22,14 @@ import { parsePersonaCard } from './persona/card.ts'
 import { PersonaStore, seedDefaultPersona } from './persona/store.ts'
 import { ChatSettingsStore } from './persona/settings.ts'
 import { StickerLibrary } from './persona/stickers.ts'
+import { StickerInbox } from './persona/sticker-inbox.ts'
 import { sendImage } from './ilink/send-image.ts'
 import { sendFile } from './ilink/send-file.ts'
 import { createAccessPolicy } from './bridge/access.ts'
 import { ApprovalBridge } from './bridge/approval.ts'
 import { PeerActivity } from './bridge/activity.ts'
-import { ReplyQueue } from './bridge/reply.ts'
+import { PeerMemory } from './bridge/memory.ts'
+import { humanThinkingMs, ReplyQueue } from './bridge/reply.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from './bridge/media.ts'
 import type { MessageItem } from './ilink/types.ts'
 import { PeerSessions, SESSION_ID_PREFIX, type AgentHandleLike, type AgentRegistryLike } from './bridge/session.ts'
@@ -123,8 +125,10 @@ export class Coordinator {
   private readonly store: PersonaStore
   private readonly chatSettings: ChatSettingsStore
   private readonly stickers: StickerLibrary
+  private readonly stickerInbox: StickerInbox
   private readonly generations: PeerGenerations
   private readonly activity: PeerActivity
+  private readonly memory: PeerMemory
   private readonly fileLog: FileLogger
   private stopProactive: (() => void) | undefined
   private readonly report: (line: string, detail?: unknown) => void
@@ -152,9 +156,12 @@ export class Coordinator {
     this.store = new PersonaStore(join(dataDir, 'personas'))
     this.chatSettings = new ChatSettingsStore(join(dataDir, 'chats'))
     this.stickers = new StickerLibrary(join(dataDir, 'stickers'))
+    this.stickerInbox = new StickerInbox(join(dataDir, 'stickers-inbox'))
     this.generations = new PeerGenerations(join(dataDir, 'generations.json'))
     // 活跃时间要落盘：否则重启后「安静了多久」归零，主动搭话再也不会触发。
     this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
+    // 跨会话记忆：模型用 [记住: …] 写，下一轮注入回去。
+    this.memory = new PeerMemory(join(dataDir, 'memories.json'))
     this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
@@ -392,6 +399,7 @@ export class Coordinator {
 
   private async startRun(): Promise<void> {
     if (this.registry === undefined || this.account === undefined || this.starting) return
+    await this.memory.load()
     this.starting = true
     try {
       await this.stopRun()
@@ -442,6 +450,8 @@ export class Coordinator {
             ...(contextToken === undefined ? {} : { contextToken }),
           })
         },
+        // 想一下再发：秒回是最像机器的地方。
+        thinkingMs: (_peerId, text) => humanThinkingMs(text),
         // 每发一条，微信都会把「正在输入」清掉；多气泡之间重报一次，读起来才连贯。
         onChunk: peerId => { void typing.start(peerId) },
         // 一条回复（可能好几个气泡）彻底发完才收尾——否则气泡之间会一闪一闪。
@@ -473,11 +483,17 @@ export class Coordinator {
         generations: this.generations,
         permissionLabel: preset,
         activity: this.activity,
+        memory: this.memory,
+        modelLabel: this.modelLabel(),
         cwd: this.config.cwd.get(),
         sendFiles: async (peerId, paths, contextToken) => {
           for (const path of paths) await this.sendFile(peerId, path, contextToken)
         },
         stickerNames: async () => await this.stickers.names(),
+        stickerInbox: {
+          latest: async peerId => await this.stickerInbox.latest(peerId),
+          adopt: async (peerId, name) => await this.stickerInbox.adopt(peerId, name, this.stickers),
+        },
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
         replies,
@@ -555,6 +571,10 @@ export class Coordinator {
         }
       },
       report: this.report,
+      // 收到图片就留一份：用户之后才能说「把刚才那张收进表情库」。
+      onImage: async ({ data, mediaType, peerId }) => {
+        if (peerId !== undefined) await this.stickerInbox.put(peerId, data, mediaType)
+      },
     })
   }
 
@@ -622,6 +642,13 @@ export class Coordinator {
       data,
     })
     return true
+  }
+
+  /** 卡片上展示的模型名；拿不到就空串。 */
+  private modelLabel(): string {
+    const selection = this.modelSelection()
+    if (selection.model === undefined) return ''
+    return selection.model
   }
 
   private modelSelection(): { provider?: string; model?: string } {
