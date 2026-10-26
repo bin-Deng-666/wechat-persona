@@ -55,22 +55,24 @@ export function planBubbles(text: string, plan: ReplyPlan = DEFAULT_REPLY_PLAN):
   const hardChars = Math.max(1, plan.hardChars)
   const softChars = Math.min(Math.max(1, plan.softChars), hardChars)
 
-  // [分条] 是模型主动选择的消息边界；没有标记时维持一条短回复。
+  // Preserve the authored text/image order. Protect control tokens from length splitting.
   return trimmed.split('[分条]').flatMap(part => {
     const text = part.trim()
-    if (text === '') return []
-    // 表情标记不参与文字长度计算，避免短气泡把素材 ID 切断。
-    const stickers = text.match(/\[表情[:：][^\]]*\]/gu) ?? []
+    if (!text) return []
+    const tokens = new Map<string, string>()
+    let next = 0xe000
+    const protectedText = text.replace(/\[表情[:：][^\]]*\]/gu, marker => {
+      while (next <= 0xf8ff && text.includes(String.fromCharCode(next))) next++
+      if (next > 0xf8ff) throw new Error('回复中的表情标记过多')
+      const token = String.fromCharCode(next++)
+      tokens.set(token, marker)
+      return token
+    })
+    const limit = plan.splitMode === 'none' ? hardChars : softChars
     const body = text.replace(/\[表情[:：][^\]]*\]/gu, '').trim()
-    const chunks = body === '' ? [] : splitText(body,
-      plan.splitMode === 'none' ? hardChars : softChars,
-      plan.splitMode === 'none' ? 'paragraph' : plan.splitMode)
-    if (stickers.length === 0) return chunks
-    // 一个气泡里可能有多张表情：全部带着，交给发送端逐张发。
-    const prefix = stickers.join(' ')
-    if (chunks.length === 0) return [prefix]
-    chunks[0] = `${prefix} ${chunks[0]}`
-    return chunks
+    if (body.length <= limit) return [text]
+    return splitText(protectedText, limit, plan.splitMode === 'none' ? 'paragraph' : plan.splitMode)
+      .map(chunk => [...chunk].map(value => tokens.get(value) ?? value).join(''))
   })
 }
 

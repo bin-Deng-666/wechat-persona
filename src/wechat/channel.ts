@@ -1,49 +1,33 @@
-/**
- * 通道运行时：长轮询 → 入站 → 会话 → 出站。
- *
- * 这一层只做接线，判断都在别处：谁能用（access）、怎么说（prompt）、怎么切（text）、
- * 怎么重试（reply）、会话怎么建（session）。
- *
- * @module wechat-persona/wechat/channel
- */
-
+/** WeChat ingress and DSH event routing. Each contact owns its conversation lifecycle. */
+import { createHash } from 'node:crypto'
 import { isAbsolute, resolve } from 'node:path'
-
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-
+import { freezeMessage } from '@deepseek-ai/dsh-llm'
 import { asWeixinMessage, BusinessError, ERRCODE_SESSION_EXPIRED, type ApiClient } from '../ilink/api.ts'
 import type { MessageItem, WeixinMessage } from '../ilink/types.ts'
 import type { AccessPolicy } from './access.ts'
 import type { ActivityStore } from '../chat/activity.ts'
+import { ConversationStore, type InboundRecord, type AgentBatch } from '../chat/history.ts'
+import { PeerConversation, type ConversationActivity } from '../chat/conversation.ts'
 import { DEFAULT_REPLY_PLAN, resolvePlan, type ReplyPlan } from '../reply/bubbles.ts'
-import { extractMemoryMarkers, type PeerMemory } from '../chat/memory.ts'
 import { expandLocationTokens } from '../text/location.ts'
 import { ChatControls } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
-import type { ReplyQueue } from '../reply/queue.ts'
+import type { ReplyQueue, DeliveryReport } from '../reply/queue.ts'
 import { extractAssistantText } from '../dsh/events.ts'
 import { PeerSessions, sessionIdFor } from '../dsh/sessions.ts'
-import { PersonaStore, type PersonaSnapshot } from '../persona/store.ts'
+import { PersonaStore } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../chat/settings.ts'
 import { extractStickerAnnotations } from '../stickers/markers.ts'
-import { type StickerLibrary } from '../stickers/library.ts'
+import type { StickerLibrary } from '../stickers/library.ts'
 import { parseCommand } from './commands.ts'
 import type { PeerGenerations } from '../chat/generations.ts'
+import { SerialWork } from '../storage/atomic.ts'
+import type { PeerMemory } from '../memory/store.ts'
+import type { MemoryActivity } from '../memory/capture.ts'
 
-/** 一个已登录账号。 */
-export interface ChannelAccount {
-  baseUrl: string
-  token: string
-  /** 扫码登录的微信号，用于默认白名单与「谁在驱动」的诊断。 */
-  userId?: string | undefined
-}
-
-/** 会话事件的订阅面。 */
-export interface SessionEventsLike {
-  on(event: 'session/event', listener: (session: { id: unknown }, event: unknown) => void): () => void
-}
-
+export interface ChannelAccount { baseUrl: string; token: string; userId?: string }
+export interface SessionEventsLike { on(event: 'session/event', listener: (session: { id: unknown }, event: unknown) => void): () => void }
 export interface ChannelOptions {
   api: ApiClient
   account: ChannelAccount
@@ -53,607 +37,386 @@ export interface ChannelOptions {
   defaultPersona: string
   replies: ReplyQueue
   events: SessionEventsLike
-  /** 诊断出口。 */
+  history?: ConversationStore
   report?: (line: string, detail?: unknown) => void
-  /** 会话失效（errcode -14）时回调：宿主据此清掉登录态。 */
   onSessionExpired?: () => void
-  /** 测试注入。 */
   sleep?: (ms: number) => Promise<void>
-  /** 单次长轮询的服务端 hold 时长。 */
   pollTimeoutMs?: number
-  /** 被限流后的退避上限。 */
   maxBackoffMs?: number
-  /** 时钟，测试用。 */
   now?: () => number
-  /** 每个聊天的设置；缺失表示所有聊天都用默认设置。 */
   settings?: ChatSettingsStore
-  /** 每个聊天的对话代次（/new 用）；缺失表示不支持开新对话。 */
   generations?: PeerGenerations
-  /** 压缩当前对话；缺失表示这个宿主没有压缩能力。 */
-  compact?: (peerId: string, generation: number) => Promise<CompactOutcome>
-  /** 当前权限档位，仅用于 /status 展示。 */
+  compact?: (peerId: string, generation: number, signal?: AbortSignal) => Promise<CompactOutcome>
   permissionLabel?: string
-  /** 输入状态上报；缺失表示不上报（headless 也能跑）。 */
   typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
-  /** 微信里的审批：入站文本先问它是不是答复；缺失表示这个部署不转发审批。 */
-  approvals?: {
-    answer: (peerId: string, text: string) => boolean
-    cancel: (peerId: string, why?: string) => void
-  }
-  /** 把会话「交付」的文件发到微信；缺失表示这个部署不支持发文件。 */
-  sendFiles?: (peerId: string, paths: readonly string[], contextToken: string | undefined) => Promise<void>
-  /** 会话的工作目录，用来把相对路径补全。 */
+  approvals?: { answer: (peerId: string, text: string) => boolean; cancel: (peerId: string, why?: string) => void }
   cwd?: string
-  /** 发一张本地表情；返回是否发出。缺失表示这个部署没有表情库。 */
   sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
-  /** 把消息里的媒体变成内容块；缺失表示这个宿主不支持媒体。 */
-  prepareMedia?: (items: readonly MessageItem[], peerId?: string) => Promise<PreparedMedia>
-  /** 每个 peer 的最后活跃时间，用于聊天列表和状态展示。 */
+  prepareMedia?: (items: readonly MessageItem[], peerId?: string, signal?: AbortSignal) => Promise<PreparedMedia>
   activity?: ActivityStore
-  /** 跨会话记忆；缺省表示不支持「记住」。 */
   memory?: PeerMemory
-  /** 当前模型 id，只用于设置卡片展示。 */
   modelLabel?: string
-  /** 联系人隔离的表情目录、自动识别结果和手动收藏。 */
   stickers?: Pick<StickerLibrary, 'names' | 'annotate' | 'adoptLatest'>
-  /** 连发几条消息的合并窗口，毫秒；0 表示每条都单独成轮。 */
   mergeWindowMs?: number
-  /** 一轮跑多久之后先回一句「还在弄」，毫秒；0 表示不提示。 */
   progressAfterMs?: number
 }
-
-/**
- * 单次长轮询的客户端上限。
- *
- * 服务端会把空闲请求握住十几秒（实测约 18s），**而且新消息不会唤醒已经握住的请求**——
- * 只会在下一次请求开始时交出来。于是「你发完等多久」完全取决于撞上当前 hold 的剩余时间。
- * 主动在 4 秒时切断重问，把最坏等待从 18 秒压到 4 秒出头；代价是请求数变多，
- * 但空闲时的空请求本来就只是心跳。
- */
-const DEFAULT_POLL_TIMEOUT_MS = 4_000
-const DEFAULT_MAX_BACKOFF_MS = 60_000
-const MAX_SEEN_IDS = 2_000
-/** 连发消息的合并窗口：微信用户习惯把一句话拆成几条发，逐条回会变成审问。 */
-const DEFAULT_MERGE_WINDOW_MS = 400
-/** 长任务第一句反馈的时机；再晚用户已经开始怀疑它死了。 */
-const DEFAULT_PROGRESS_AFTER_MS = 25_000
-
-/** 还在合并窗口里攒着的一条入站消息。 */
-interface PendingInbound {
-  texts: string[]
-  items: MessageItem[]
-  contextToken: string | undefined
-  generation: number
-  timer: NodeJS.Timeout | undefined
-}
-
-/** 一条入站消息里我们能读到的文本（媒体在 M2 接）。 */
 export function textOf(message: WeixinMessage): string {
-  const parts: string[] = []
-  for (const item of message.item_list ?? []) {
-    if (item.type === 1 && typeof item.text_item?.text === 'string') parts.push(item.text_item.text)
-    else if (item.type === 3 && typeof item.voice_item?.text === 'string' && item.voice_item.text !== '') {
-      // 语音优先用服务端转写；没有转写就留一个占位，让模型知道有语音。
-      parts.push(item.voice_item.text)
-    }
-  }
-  return parts.join('\n').trim()
+  return (message.item_list ?? []).flatMap(item => item.type === 1 && typeof item.text_item?.text === 'string' ? [item.text_item.text]
+    : item.type === 3 && item.voice_item?.text ? [item.voice_item.text] : []).join('\n').trim()
 }
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
 export class Channel {
-  private readonly options: ChannelOptions
-  private readonly sleep: (ms: number) => Promise<void>
-  private cursor: string | undefined
-  /** 单次长轮询的客户端超时；跟着服务端建议值走。 */
-  private pollTimeout: number | undefined
-  private running = false
-  private abort: AbortController | undefined
-  /** session id → peer id，用于把事件路由回微信。 */
-  private readonly peerBySession = new Map<string, string>()
-  /** peer → 最近一条入站消息的 context_token。 */
+  private readonly history: ConversationStore
+  private readonly conversations = new Map<string, Promise<PeerConversation>>()
+  private readonly states = new Map<string, PeerConversation>()
+  private readonly routes = new Map<string, { conversation: PeerConversation; generation: number }>()
   private readonly contextTokens = new Map<string, string>()
-  /** 已处理的 message_id，防重放。 */
-  private readonly seen = new Set<string>()
-  /** 正在合并窗口里攒消息的 peer。 */
-  private readonly pending = new Map<string, PendingInbound>()
-  /** peer → 这个聊天的发送形态（人格卡 + 聊天设置算出来的）。 */
   private readonly plans = new Map<string, ReplyPlan>()
-  private readonly controls: ChatControls
-  /** peer → 「还在弄」提示的定时器。 */
+  private readonly jobs = new Set<Promise<unknown>>()
+  private readonly eventWork = new Map<string, SerialWork>()
+  private eventQueue(peerId: string): SerialWork { let queue = this.eventWork.get(peerId); if (!queue) { queue = new SerialWork(); this.eventWork.set(peerId, queue) } return queue }
   private readonly progress = new Map<string, NodeJS.Timeout>()
-  /** 已经投递、还没等到 turn/end 的 peer。 */
-  private readonly turnActive = new Set<string>()
-  /** 每个 peer 的最后活跃时间；落盘实现由宿主注入。 */
+  private readonly turnCounts = new Map<string, number>()
   private readonly activity: ActivityStore
-  private snapshot: PersonaSnapshot | undefined
+  private readonly controls: ChatControls
+  private running = false
+  private closed = false
+  private abort: AbortController | undefined
   private unsubscribe: (() => void) | undefined
-
+  private cursor: string | undefined
+  private readonly sleep: (ms: number) => Promise<void>
+  private readonly options: ChannelOptions
   constructor(options: ChannelOptions) {
     this.options = options
-    this.sleep = options.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)) })
-    // 没有落盘实现时退化成一个私有 Map：行为和以前一致，只是重启会丢。
-    const memory = new Map<string, number>()
-    this.activity = options.activity ?? {
-      get: peerId => memory.get(peerId),
-      touch: (peerId, at) => { memory.set(peerId, at) },
-      peers: () => [...memory.keys()],
-    }
-    this.controls = new ChatControls({
-      ...options,
-      planFor: peerId => this.plans.get(peerId),
-      setPlan: (peerId, plan) => { this.plans.set(peerId, plan) },
-      contextTokenFor: peerId => this.contextTokens.get(peerId),
-      compactConversation: options.compact,
-      lastSeen: peerId => this.activity.get(peerId),
-      turnsFor: peerId => this.turnCounts.get(peerId) ?? 0,
-      cancelTurn: async (peerId, generation) => {
-        this.clearProgress(peerId)
-        this.turnActive.delete(peerId)
-        return await this.options.sessions.cancel(peerId, generation)
-      },
+    this.history = options.history ?? new ConversationStore()
+    this.sleep = options.sleep ?? (async ms => { await new Promise(resolve => setTimeout(resolve, ms)) })
+    const activity = new Map<string, number>()
+    this.activity = options.activity ?? { get: peer => activity.get(peer), touch: (peer, at) => { activity.set(peer, at) }, peers: () => [...activity.keys()] }
+    this.controls = new ChatControls({ ...options,
+      scopeFor: peer => this.states.get(peer)?.controlScope(),
+      planFor: peer => this.plans.get(peer), setPlan: (peer, plan) => { this.plans.set(peer, plan) },
+      contextTokenFor: peer => this.contextTokens.get(peer), lastSeen: peer => this.activity.get(peer),
+      turnsFor: peer => this.turnCounts.get(peer) ?? 0,
+      cancelTurn: async peer => await this.stopConversation(await this.conversation(peer)),
+      newConversation: async peer => await this.newConversation(await this.conversation(peer)),
+      compactConversation: async peer => await this.compactConversation(await this.conversation(peer)),
+      sendSticker: async (peer, name, token) => (await options.replies.enqueue(peer, `[表情:${name}]`, token, undefined, { immediate: true })).status === 'accepted',
     })
   }
-
-  /** 从指定游标开始跑；返回的 Promise 在 stop 后 settle。 */
+  private conversation(peerId: string): Promise<PeerConversation> {
+    let pending = this.conversations.get(peerId)
+    if (!pending) {
+      pending = (async () => { const state = new PeerConversation(peerId, await this.options.generations?.get(peerId) ?? 0); this.states.set(peerId, state); return state })()
+      this.conversations.set(peerId, pending)
+    }
+    return pending
+  }
+  private track<T>(promise: Promise<T>): Promise<T> {
+    this.jobs.add(promise)
+    void promise.catch(error => { this.options.report?.('对话工作失败', { error: String(error) }) }).finally(() => { this.jobs.delete(promise) })
+    return promise
+  }
   async run(initialCursor?: string): Promise<void> {
-    this.cursor = initialCursor
-    this.running = true
-    this.abort = new AbortController()
-    this.snapshot = await this.options.personas.snapshot()
-    // 恢复聊天列表和最后活跃时间。
-    await this.activity.load?.()
+    this.cursor = initialCursor; this.running = true; this.closed = false; this.abort = new AbortController()
     this.subscribeReplies()
-
-    const pollTimeout = this.options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS
-    this.pollTimeout = pollTimeout
-    let backoff = 1_000
-
+    await this.activity.load?.()
+    await this.options.replies.recover()
+    await this.recoverInputs()
+    let timeout = this.options.pollTimeoutMs ?? 4000, backoff = 1000
     while (this.running) {
-      const startedAt = (this.options.now ?? Date.now)()
+      const start = (this.options.now ?? Date.now)()
       try {
-        const result = await this.options.api.getUpdates({
-          baseUrl: this.options.account.baseUrl,
-          endpoint: 'ilink/bot/getupdates',
-          label: 'getupdates',
-          token: this.options.account.token,
-          ...(this.cursor === undefined ? {} : { cursor: this.cursor }),
-          timeoutMs: this.pollTimeout ?? pollTimeout,
-          signal: this.abort.signal,
-        })
-        backoff = 1_000
-        const waited = (this.options.now ?? Date.now)() - startedAt
-        if (result.msgs.length > 0) {
-          // 这条日志是判断「慢在哪」的关键：长轮询等了多久才把消息交给我们。
-          this.options.report?.(`收到 ${String(result.msgs.length)} 条消息（长轮询等待 ${String(waited)}ms）`)
-        }
-        for (const raw of result.msgs) await this.handle(raw)
+        const result = await this.options.api.getUpdates({ baseUrl: this.options.account.baseUrl, endpoint: 'ilink/bot/getupdates', label: 'getupdates', token: this.options.account.token,
+          ...(this.cursor === undefined ? {} : { cursor: this.cursor }), timeoutMs: timeout, signal: this.abort.signal })
+        backoff = 1000
+        // handle acknowledges durable acceptance, never waits for a model, media download or send.
+        for (const raw of result.msgs) await this.handle(raw, true)
         if (result.get_updates_buf !== undefined) this.cursor = result.get_updates_buf
-
-        // 服务端建议的 hold 只用来「往小里收」：它越大，我们越要勤问。
-        if (result.longpolling_timeout_ms !== undefined && result.longpolling_timeout_ms > 0) {
-          this.pollTimeout = Math.min(this.pollTimeout, result.longpolling_timeout_ms)
-        }
-
-        // 服务端本该 hold 住请求；如果它秒回且没有消息，这里补一小段睡眠，
-        // 否则就是空转——一秒钟打几十次接口，看起来像被限流，其实是自己在刷。
-        if (result.msgs.length === 0 && waited < 500) await this.sleep(500 - waited)
+        if (result.longpolling_timeout_ms && result.longpolling_timeout_ms > 0) timeout = Math.min(timeout, result.longpolling_timeout_ms)
+        const spent = (this.options.now ?? Date.now)() - start
+        if (!result.msgs.length && spent < 500) await this.sleep(500 - spent)
       } catch (error) {
         if (!this.running) break
-        // 主动切断的空转不是故障：这是我们自己在缩短 hold，直接开下一次。
-        if (isTimeout(error)) continue
-        if (error instanceof BusinessError && error.code === ERRCODE_SESSION_EXPIRED) {
-          this.options.report?.('微信会话已失效（errcode -14），需要在插件页重新扫码')
-          this.options.onSessionExpired?.()
-          // 不盲目重试：token 已经无效，重试只是刷日志。
-          this.running = false
-          break
-        }
-        // 长轮询超时/网络抖动是常态：退避后继续，不把它当致命错误。
+        if ((error as { classification?: { type?: string } })?.classification?.type === 'timeout') continue
+        if (error instanceof BusinessError && error.code === ERRCODE_SESSION_EXPIRED) { this.running = false; this.options.onSessionExpired?.(); break }
         this.options.report?.('轮询失败，稍后重试', { error: String(error) })
-        await this.sleep(backoff)
-        backoff = Math.min(this.options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS, backoff * 2)
+        await this.sleep(backoff); backoff = Math.min(this.options.maxBackoffMs ?? 60000, backoff * 2)
       }
     }
-
-    this.unsubscribe?.()
-    this.unsubscribe = undefined
+    this.unsubscribe?.(); this.unsubscribe = undefined
   }
-
-  /** 停止接收和会话驱动，撤销监听器，等已接受的回复排空。 */
-  async stop(): Promise<void> {
-    this.running = false
-    this.abort?.abort()
-    this.unsubscribe?.()
-    this.unsubscribe = undefined
-    for (const entry of this.pending.values()) if (entry.timer !== undefined) clearTimeout(entry.timer)
-    this.pending.clear()
-    this.controls.dispose()
-    for (const timer of this.progress.values()) clearTimeout(timer)
-    this.progress.clear()
-    await this.options.sessions.disposeAll?.()
-    await this.whenIdle()
-    await this.activity.flush?.()
-  }
-
-  /** 等识别结果落盘和文字/表情发送完成。 */
-  async whenIdle(): Promise<void> {
-    while (this.replyWork.size > 0) await Promise.all([...this.replyWork.values()])
-    await this.options.replies.whenIdle()
-  }
-
-  /** 当前游标，供宿主持久化。 */
-  getCursor(): string | undefined {
-    return this.cursor
-  }
-
-  /** 把一条原始消息处理完（供测试直接调用）。 */
-  async handle(raw: unknown): Promise<void> {
-    // 直接调用 handle（例如测试或补投）时也要有回复订阅，否则回答会掉进空处。
-    if (this.unsubscribe === undefined) this.subscribeReplies()
+  /** Direct callers may wait for a zero-window batch; polling only waits for the durable inbox. */
+  async handle(raw: unknown, receiveOnly = false): Promise<void> {
+    if (this.closed) return
+    this.subscribeReplies()
     const message = asWeixinMessage(raw)
-    if (message === undefined) return
-    // 只处理用户发的；Bot 自己的回声要丢掉，否则会自问自答。
-    if (message.message_type !== undefined && message.message_type !== 1) return
-
+    if (!message || (message.message_type !== undefined && message.message_type !== 1)) return
     const peerId = message.from_user_id ?? ''
-    if (peerId === '') return
-
-    const messageId = message.message_id === undefined ? undefined : String(message.message_id)
-    if (messageId !== undefined) {
-      if (this.seen.has(messageId)) return
-      this.seen.add(messageId)
-      if (this.seen.size > MAX_SEEN_IDS) {
-        // 简单的有界缓存：超过上限就丢掉最早的一批。
-        const drop = [...this.seen].slice(0, MAX_SEEN_IDS / 2)
-        for (const id of drop) this.seen.delete(id)
-      }
-    }
-
-    if (!this.options.access.admits(peerId)) {
-      // 不回复陌生人是刻意的：回一句「你是谁」等于告诉对方机器人活着。
-      this.options.report?.('拒绝了一个不在名单里的 peer', { peerId })
-      return
-    }
-
-    if (message.context_token !== undefined && message.context_token !== '') {
-      this.contextTokens.set(peerId, message.context_token)
-    }
-    // 让手机那头看到「对方正在输入」。失败无所谓，所以不 await。
-    void this.options.typing?.start(peerId, message.context_token)
-
-    const generation = this.options.generations === undefined ? 0 : await this.options.generations.get(peerId)
-
-    const rawText = textOf(message)
-    // 审批答复优先于一切：此刻模型正停在这一步等一个结论，
-    // 把「1」当成普通消息喂进去，等于让它自己批自己。
-    if (this.options.approvals?.answer(peerId, rawText) === true) return
-
-    // 设置卡片打开时，单个数字就是一次点击。
-    if (await this.controls.consumeMenu(peerId, rawText)) return
-
-    // 命令先于一切：/help 不该进模型，/new 更不能作为一条消息喂给旧会话。
-    const command = parseCommand(rawText)
-    if (command !== undefined) {
-      // 但命令也不能插队到已经攒着的消息前面：先把它之前的话投出去。
-      await this.flush(peerId)
-      await this.controls.execute(peerId, command, generation, message.context_token)
-      return
-    }
-
-    const settings = await this.settingsFor(peerId)
-    if (!settings.enabled) {
-      // 明确关掉的聊天不投递：用户说了不想让它在某个对话里说话。
-      this.options.report?.('这个聊天已被关闭，消息不投递', { peerId })
-      return
-    }
-
-    const immediate = this.buffer(peerId, rawText, message.item_list ?? [], message.context_token, generation)
-    // 窗口为 0（测试或「每条都单独成轮」的部署）时同步投递，别把 Promise 丢掉。
-    if (immediate !== undefined) await immediate
+    if (!peerId || !this.options.access.admits(peerId)) return
+    const conversation = await this.conversation(peerId)
+    await this.track(conversation.accept(async () => {
+      const received = await this.history.receive(peerId, conversation.generation, message, textOf(message), (this.options.now ?? Date.now)())
+      if (received.fresh) await this.dispatch(conversation, received.record)
+    }))
+    if (!receiveOnly && (this.options.mergeWindowMs ?? 650) <= 0) await conversation.whenIdle()
   }
-
-  /** 读这个聊天的设置；没有设置仓库时用默认值。 */
-  private async settingsFor(peerId: string): Promise<ChatSettings> {
-    return this.options.settings === undefined ? DEFAULT_CHAT_SETTINGS : await this.options.settings.get(peerId)
-  }
-
-
-  /**
-   * 把一条消息放进合并窗口。
-   *
-   * 微信用户习惯把一句话拆成三四条发（「在吗」「问你个事」「帮我看看」）。
-   * 每条都开一轮的话，会收到三个回答，而且后两个是在回答上一句的残片。
-   */
-  private buffer(peerId: string, text: string, items: readonly MessageItem[], contextToken: string | undefined, generation: number): Promise<void> | undefined {
-    const existing = this.pending.get(peerId)
-    const entry: PendingInbound = existing ?? {
-      texts: [],
-      items: [],
-      contextToken: undefined,
-      generation,
-      timer: undefined,
-    }
-    entry.texts.push(text)
-    entry.items.push(...items)
-    if (contextToken !== undefined) entry.contextToken = contextToken
-    entry.generation = generation
-
-    if (entry.timer !== undefined) clearTimeout(entry.timer)
-    const window = this.options.mergeWindowMs ?? DEFAULT_MERGE_WINDOW_MS
-    if (window <= 0) {
-      this.pending.set(peerId, entry)
-      return this.flush(peerId)
-    }
-    entry.timer = setTimeout(() => {
-      entry.timer = undefined
-      void this.flush(peerId)
-    }, window)
-    entry.timer.unref?.()
-    this.pending.set(peerId, entry)
-    return undefined
-  }
-
-  /**
-   * 把攒着的消息合成一轮投给模型。
-   *
-   * 出错要说话：会话建不起来（宿主在重启、preset 掉了）时用户只会看到「对方正在输入」消失，
-   * 那种沉默会被理解成「它不理我」。
-   */
-  private async flush(peerId: string): Promise<void> {
-    const pending = this.pending.get(peerId)
-    if (pending === undefined) return
-    this.pending.delete(peerId)
-    if (pending.timer !== undefined) clearTimeout(pending.timer)
-
-    try {
-      const settings = await this.settingsFor(peerId)
-      if (!settings.enabled) return
-
-      const snapshot = await this.ensureSnapshot()
-      const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, snapshot)
-      const plan = resolvePlan(card, settings)
-      this.plans.set(peerId, plan)
-
-      // 只投递微信原文和附件；人格、记忆等由会话系统提示词负责。
-      const text = pending.texts.filter(part => part !== '').join('\n')
-
-      // 媒体：能附上就附，附不上就把说明拼进文字——丢图可以，丢消息不行。
-      let prepared: PreparedMedia = { parts: [], notes: [] }
-      if (this.options.prepareMedia !== undefined && pending.items.length > 0) {
+  private async dispatch(conversation: PeerConversation, record: InboundRecord): Promise<void> {
+    if (this.closed) return
+    const { peerId } = conversation
+    const token = record.raw.context_token
+    if (token) this.contextTokens.set(peerId, token)
+    void this.options.typing?.start(peerId, token)
+    if (this.options.approvals?.answer(peerId, record.text)) { await this.history.inputStatus(peerId, [record.id], 'control'); return }
+    const command = parseCommand(record.text)
+    if (command) {
+      await this.history.inputStatus(peerId, [record.id], 'control')
+      const execute = async () => {
         try {
-          prepared = await this.options.prepareMedia(pending.items, peerId)
+          if (await this.controls.consumeMenu(peerId, record.text)) return
+          await this.controls.execute(peerId, command, conversation.generation, token)
+          await this.history.notice(peerId, `用户执行设置指令：${record.text}`)
         } catch (error) {
-          this.options.report?.('媒体预处理失败', { error: String(error) })
+          this.options.report?.('微信指令未完成', { peerId, command: command.name, error: String(error) })
+          this.notice(conversation, '这次设置没能完成，可以再试一次。')
         }
       }
-      const body = [text, ...prepared.notes].filter(part => part !== '').join('\n')
-      const content = [...(body === '' ? [] : [{ type: 'text', text: body }]), ...prepared.parts]
-      // 无法读取的媒体仍需明确说明；成功的纯图片消息不额外伪造用户文字。
-      if (content.length === 0) content.push({ type: 'text', text: '（收到一条无法读取的消息）' })
-      const userMessage = createUserMessage({ content: content as never, source: { kind: 'user' } })
-      this.activity.touch(peerId, (this.options.now ?? Date.now)())
-      this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
-      this.options.report?.(`投递给模型（合并 ${String(pending.texts.length)} 条）`)
-
-      this.peerBySession.set(sessionIdFor(peerId, pending.generation), peerId)
-      this.startProgress(peerId)
-      await this.options.sessions.deliver(peerId, userMessage as never, pending.generation)
-    } catch (error) {
-      this.clearProgress(peerId)
-      this.options.report?.('投递给模型失败', { peerId, error: String(error) })
-      this.notice(peerId, '这条我没接上（会话没起来），再发一次试试。')
+      // Commands share one executor; only long-running work leaves the ingress lane.
+      if (command.name === 'compact' || (command.name === '表情' && ['发', '发送'].includes(command.args[0] ?? ''))) this.track(execute())
+      else await execute()
+      return
+    }
+    // Menu lookup can send a card, so it runs off the ingress loop as well.
+    if (await this.controls.consumeMenu(peerId, record.text)) { await this.history.inputStatus(peerId, [record.id], 'control'); return }
+    if (!(await this.settingsFor(peerId)).enabled) { await this.history.inputStatus(peerId, [record.id], 'cancelled'); return }
+    if (conversation.activity?.phase === 'compacting') conversation.invalidate()
+    conversation.pending.push(record)
+    if (conversation.activity?.phase === 'running') {
+      conversation.activity.pendingMessages.add(`input:${record.id}`)
+      conversation.activity.output.abort()
+    }
+    if (conversation.timer) clearTimeout(conversation.timer)
+    const window = this.options.mergeWindowMs ?? 650
+    if (window <= 0) { this.track(this.flush(conversation)); return }
+    const remaining = Math.max(0, 1800 - ((this.options.now ?? Date.now)() - conversation.pending[0]!.receivedAt))
+    conversation.timer = setTimeout(() => { conversation.timer = undefined; this.track(this.flush(conversation)) }, Math.min(window, remaining))
+    conversation.timer.unref?.()
+  }
+  private settingsFor(peer: string): Promise<ChatSettings> { return this.options.settings?.get(peer) ?? Promise.resolve(DEFAULT_CHAT_SETTINGS) }
+  private async flush(conversation: PeerConversation): Promise<void> {
+    if (conversation.timer) clearTimeout(conversation.timer)
+    conversation.timer = undefined
+    const records = conversation.pending.splice(0)
+    if (!records.length) return
+    const epoch = conversation.epoch
+    await conversation.schedule(async () => {
+      if (this.closed) return
+      if (epoch !== conversation.epoch) { await this.history.inputStatus(conversation.peerId, records.map(record => record.id), 'cancelled'); return }
+      const activity = conversation.begin(records)
+      const settings = await this.settingsFor(conversation.peerId)
+      const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, await this.options.personas.snapshot())
+      this.plans.set(conversation.peerId, resolvePlan(card, settings))
+      const content: { type: string; [key: string]: unknown }[] = []
+      const addText = (text: string) => {
+        if (!text) return
+        const last = content.at(-1)
+        if (last?.type === 'text') last.text = `${last.text}\n${text}`
+        else content.push({ type: 'text', text })
+      }
+      try {
+        for (const record of records) {
+          for (const item of record.raw.item_list ?? []) {
+            if (item.type === 1 && item.text_item?.text) { addText(item.text_item.text); continue }
+            if (item.type === 3 && item.voice_item?.text) { addText(item.voice_item.text); continue }
+            if (this.options.prepareMedia) {
+              const media = await this.options.prepareMedia([item], conversation.peerId, activity.signal)
+              for (const note of media.notes) addText(note)
+              content.push(...media.parts as typeof content)
+            }
+          }
+        }
+        if (this.closed) return
+        if (activity.signal.aborted || epoch !== conversation.epoch) { await this.history.inputStatus(conversation.peerId, records.map(record => record.id), 'cancelled'); return }
+        if (!content.length) addText('（收到一条无法读取的消息）')
+        const id = `wx_batch_${createHash('sha256').update(records.map(record => record.id).join('\0')).digest('hex')}`
+        const batch: AgentBatch = { id, activityId: activity.id, generation: conversation.generation, inputIds: records.map(record => record.id), content, status: 'pending' }
+        await this.history.saveBatch(conversation.peerId, batch)
+        await this.submitBatch(conversation, activity, batch)
+      } catch (error) {
+        this.clearProgress(conversation.peerId)
+        this.options.report?.('投递给模型失败', { peerId: conversation.peerId, error: String(error) })
+        if (!activity.signal.aborted) this.notice(conversation, '这条暂时没接上，消息已保留。可以重试或开新对话。', activity)
+      }
+    })
+  }
+  private async submitBatch(conversation: PeerConversation, activity: ConversationActivity, batch: AgentBatch): Promise<void> {
+    const { peerId } = conversation
+    for (const id of batch.inputIds) activity.pendingMessages.delete(`input:${id}`)
+    activity.pendingMessages.add(batch.id)
+    this.routes.set(sessionIdFor(peerId, conversation.generation), { conversation, generation: conversation.generation })
+    await this.history.inputStatus(peerId, batch.inputIds, 'submitted', batch.id)
+    this.startProgress(conversation, activity)
+    const message = freezeMessage({ id: batch.id, role: 'user', content: batch.content, source: { kind: 'user' } } as never)
+    await this.options.sessions.deliver(peerId, message as never, conversation.generation)
+    batch.status = 'submitted'; await this.history.saveBatch(peerId, batch)
+    this.activity.touch(peerId, (this.options.now ?? Date.now)())
+    this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
+  }
+  private async recoverInputs(): Promise<void> {
+    for (const peerId of await this.history.peers()) {
+      if (!this.options.access.admits(peerId)) continue
+      const conversation = await this.conversation(peerId)
+      const state = await this.history.history(peerId)
+      for (const batch of state.batches.filter(batch => batch.status !== 'cancelled' && batch.generation === conversation.generation)) {
+        if (batch.status !== 'pending') continue
+        const records = state.inputs.filter(input => batch.inputIds.includes(input.id))
+        const activity = conversation.begin(records)
+        this.track(conversation.schedule(async () => { await this.submitBatch(conversation, activity, batch) }))
+      }
+      for (const record of state.inputs.filter(input => input.status === 'received')) {
+        if (record.generation !== conversation.generation) await this.history.inputStatus(peerId, [record.id], 'cancelled')
+        else this.track(this.dispatch(conversation, record))
+      }
     }
   }
-
-  /** 发一条系统提示（不分条、不占用回复形态）。 */
-  private notice(peerId: string, text: string): void {
-    const plan = this.plans.get(peerId) ?? DEFAULT_REPLY_PLAN
-    void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId), { ...plan, splitMode: 'none' }, { immediate: true })
+  private async stopConversation(conversation: PeerConversation): Promise<boolean> {
+    const pending = [...conversation.pending]
+    const active = conversation.invalidate()
+    const output = this.options.replies.cancel(conversation.peerId)
+    this.clearProgress(conversation.peerId)
+    this.controls.closeMenu(conversation.peerId)
+    await this.history.cancelTask(conversation.peerId, conversation.generation)
+    this.options.approvals?.cancel(conversation.peerId, '用户停止')
+    const cancelled = await this.options.sessions.cancel?.(conversation.peerId, conversation.generation) ?? false
+    if (pending.length) await this.history.inputStatus(conversation.peerId, pending.map(record => record.id), 'cancelled')
+    const state = await this.history.history(conversation.peerId)
+    for (const batch of state.batches.filter(batch => batch.generation === conversation.generation && batch.status === 'pending')) await this.history.saveBatch(conversation.peerId, { ...batch, status: 'cancelled' })
+    await this.history.notice(conversation.peerId, '用户停止了当前任务和未发送内容')
+    return active || output || cancelled || pending.length > 0
   }
-
-  /**
-   * 起「还在弄」的定时器。
-   *
-   * 一轮用到工具时可能跑几分钟，这期间微信那头只有「正在输入」——
-   * 超过半分钟没有任何输出，人就会怀疑它挂了。
-   */
-  private startProgress(peerId: string): void {
-    this.clearProgress(peerId)
-    const after = this.options.progressAfterMs ?? DEFAULT_PROGRESS_AFTER_MS
-    if (after <= 0) return
-    this.turnActive.add(peerId)
+  private async newConversation(conversation: PeerConversation): Promise<number> {
+    await this.stopConversation(conversation)
+    if (!this.options.generations) throw new Error('这个部署没有开启多段对话')
+    conversation.generation = await this.options.generations.bump(conversation.peerId)
+    conversation.activity = undefined
+    await this.history.notice(conversation.peerId, `用户开启第 ${conversation.generation + 1} 段新对话`)
+    return conversation.generation
+  }
+  private async compactConversation(conversation: PeerConversation): Promise<CompactOutcome> {
+    if (!this.options.compact) return { kind: 'unavailable' }
+    if (conversation.activity?.phase === 'running') return { kind: 'busy' }
+    const activity = conversation.begin([]); activity.phase = 'compacting'
+    try { return await this.options.compact(conversation.peerId, conversation.generation, activity.signal) }
+    finally { if (!activity.signal.aborted) activity.phase = 'idle' }
+  }
+  private notice(conversation: PeerConversation, text: string, activity?: ConversationActivity): void {
+    const plan = this.plans.get(conversation.peerId) ?? DEFAULT_REPLY_PLAN
+    const scope = activity ? conversation.scope(activity) : conversation.controlScope()
+    const token = activity?.contextToken ?? this.contextTokens.get(conversation.peerId)
+    this.track(this.eventQueue(conversation.peerId).run(async () => {
+      if (scope?.signal?.aborted) return
+      this.track(this.options.replies.enqueue(conversation.peerId, text, token, { ...plan, splitMode: 'none' }, { immediate: true, scope }))
+    }))
+  }
+  private startProgress(conversation: PeerConversation, activity: ConversationActivity): void {
+    this.clearProgress(conversation.peerId)
+    const delay = this.options.progressAfterMs ?? 25000
+    if (delay <= 0) return
     const timer = setTimeout(() => {
-      this.progress.delete(peerId)
-      if (!this.turnActive.has(peerId)) return
-      this.notice(peerId, '还在弄，稍等一下。')
-    }, after)
-    timer.unref?.()
-    this.progress.set(peerId, timer)
+      this.progress.delete(conversation.peerId)
+      if (conversation.activity === activity && activity.phase === 'running' && !activity.signal.aborted) this.notice(conversation, '还在处理，稍等一下。', activity)
+    }, delay)
+    timer.unref?.(); this.progress.set(conversation.peerId, timer)
   }
-
-  private clearProgress(peerId: string): void {
-    const timer = this.progress.get(peerId)
-    if (timer !== undefined) clearTimeout(timer)
-    this.progress.delete(peerId)
-  }
-
-  /** 人格快照：run 时加载一次；直接调 handle（测试/补投）时按需加载。 */
-  private async ensureSnapshot(): Promise<PersonaSnapshot> {
-    // 每次都扫：snapshot 内部按 mtime 判断，没变就是几次 stat，成本可以忽略。
-    // 这样「改人格卡 → 下一条消息生效」，不必重启。
-    this.snapshot = await this.options.personas.snapshot()
-    return this.snapshot
-  }
-
-  /** 每个 peer 处理过的消息条数（/status 用）。 */
-  private readonly turnCounts = new Map<string, number>()
-
-  /**
-   * 这个 chat 最近一条入站消息的 context_token。
-   *
-   * 审批提示要在「模型正在跑」的时候发出去，这时没有新消息可回，
-   * 只能沿用上一条的令牌。
-   */
-  contextTokenFor(peerId: string): string | undefined {
-    return this.contextTokens.get(peerId)
-  }
-
-  /**
-   * 挂上审批桥。
-   *
-   * 桥要用回复队列和上下文令牌，而这两样都要等通道造好才有；
-   * 所以不放进构造参数，而是造好后回填一次。
-   */
-  setApprovals(approvals: NonNullable<ChannelOptions['approvals']>): void {
-    this.options.approvals = approvals
-  }
-
-  /** 会话 id → peer id；审批请求只带 agent，不带 peer。 */
-  peerForSession(sessionId: string): string | undefined {
-    return this.peerBySession.get(sessionId)
-  }
-
-  /** 已知的 peer 列表（说过话的）。 */
-  knownPeers(): readonly string[] {
-    return this.activity.peers()
-  }
-
+  private clearProgress(peerId: string): void { const timer = this.progress.get(peerId); if (timer) clearTimeout(timer); this.progress.delete(peerId) }
   private subscribeReplies(): void {
+    if (this.unsubscribe || this.closed) return
     this.unsubscribe = this.options.events.on('session/event', (session, event) => {
-      const peerId = this.peerBySession.get(String(session.id))
-      if (peerId === undefined) return
-
-      const type = isRecord(event) ? event['type'] : undefined
-      // 一轮结束是本文件唯一能知道「失败/被审批卡住」的地方：
-      // 只看 assistant/message 的话，模型报错时微信那头是一片沉默。
-      if (type === 'turn/end') {
-        this.onTurnEnd(peerId, event)
-        return
-      }
-      // 模型用 present 交付文件：图片之外的东西（docx/pdf/zip）走这条。
-      if (type === 'deliverables/presented') {
-        void this.handlePresented(peerId, event)
-        return
-      }
-
+      const route = this.routes.get(String(session.id))
+      if (!route || !isRecord(event)) return
+      const { conversation } = route
+      if (route.generation !== conversation.generation) return
+      const data = isRecord(event.data) ? event.data : {}
+      const turn = typeof data.turn === 'number' ? data.turn : undefined
+      if (event.type === 'turn/start' && turn !== undefined) { conversation.turnStart(turn); return }
+      if (event.type === 'user/message') { if (typeof data.id === 'string') conversation.messageClaimed(data.id); return }
+      const activity = conversation.eventActivity(turn)
+      if (!activity) return
+      if (event.type === 'turn/end') { this.onTurnEnd(conversation, event, turn); return }
+      // A response generated before fresh steering was consumed cannot answer that steering.
+      if (turn !== undefined && activity.pendingMessages.size > 0) return
+      if (event.type === 'deliverables/presented') { this.present(conversation, activity, data, event); return }
       const text = extractAssistantText(event)
       if (text === undefined) return
-      // 有正式回答就说明这轮还活着，别再补「还在弄」。
-      this.clearProgress(peerId)
-      this.turnActive.delete(peerId)
-      this.queueAssistantReply(peerId, text)
+      this.clearProgress(conversation.peerId)
+      const scope = conversation.scope(activity)
+      const token = activity.contextToken
+      const groupId = `${String(session.id)}:${isRecord(data.message) && typeof data.message.id === 'string' ? data.message.id : event.seq ?? `${activity.id}:${turn ?? ''}:${data.step ?? ''}:${createHash('sha256').update(text).digest('hex')}`}`
+      this.track(this.eventQueue(conversation.peerId).run(async () => {
+        const old = (await this.history.history(conversation.peerId)).deliveries
+        if (old.some(unit => unit.groupId === groupId)) return
+        if (scope?.signal?.aborted) return
+        const classified = extractStickerAnnotations(text.replace(/\[记住[:：][^\]\n]*\]/gu, ''))
+        await this.options.stickers?.annotate(conversation.peerId, classified.annotations)
+        if (scope?.signal?.aborted) return
+        this.track(this.options.replies.enqueue(conversation.peerId, expandLocationTokens(classified.text), token, this.plans.get(conversation.peerId), { scope, groupId })
+          .then(report => { this.reportDelivery(conversation.peerId, report) }))
+      }))
     })
   }
-
-  /** 先持久化素材识别结果，再排队发送；同一联系人严格按事件顺序处理。 */
-  private readonly replyWork = new Map<string, Promise<void>>()
-
-  private queueAssistantReply(peerId: string, text: string): void {
-    const token = this.contextTokens.get(peerId)
-    const plan = this.plans.get(peerId)
-    const previous = this.replyWork.get(peerId) ?? Promise.resolve()
-    const job = previous.catch(() => {}).then(async () => {
-      const recalled = extractMemoryMarkers(text)
-      const classified = extractStickerAnnotations(recalled.text)
-      try {
-        await this.options.memory?.remember(peerId, recalled.facts)
-        await this.options.stickers?.annotate(peerId, classified.annotations)
-      } catch (error) {
-        this.options.report?.('保存记忆或表情识别结果失败', { peerId, error: String(error) })
-      }
-      const body = expandLocationTokens(classified.text)
-      if (body === '') return
-      const queuedAt = (this.options.now ?? Date.now)()
-      await this.options.replies.enqueue(peerId, body, token, plan)
-      this.options.report?.(`回复已发出（模型出字到发完 ${String((this.options.now ?? Date.now)() - queuedAt)}ms）`)
-    }).catch((error: unknown) => {
-      this.options.report?.('回复处理失败', { peerId, error: String(error) })
-    }).finally(() => {
-      if (this.replyWork.get(peerId) === job) this.replyWork.delete(peerId)
-    })
-    this.replyWork.set(peerId, job)
+  private present(conversation: PeerConversation, activity: ConversationActivity, data: Record<string, unknown>, event: Record<string, unknown>): void {
+    const paths = Array.isArray(data.files) ? data.files.flatMap(file => isRecord(file) && typeof file.path === 'string' ? [isAbsolute(file.path) ? file.path : resolve(this.options.cwd ?? '.', file.path)] : []) : []
+    if (!paths.length) return
+    this.clearProgress(conversation.peerId)
+    const token = activity.contextToken, scope = conversation.scope(activity)
+    this.track(this.eventQueue(conversation.peerId).run(async () => {
+      if (scope?.signal?.aborted) return
+      const groupId = `${sessionIdFor(conversation.peerId, conversation.generation)}:files:${event.seq ?? `${activity.id}:${createHash('sha256').update(JSON.stringify(paths)).digest('hex')}`}`
+      if ((await this.history.history(conversation.peerId)).deliveries.some(unit => unit.groupId === groupId)) return
+      this.track(this.options.replies.enqueueFiles(conversation.peerId, paths, token, scope, groupId)
+        .then(report => { this.reportDelivery(conversation.peerId, report); if (report.status === 'failed' || report.status === 'unknown') this.notice(conversation, '文件未确认发出，可以让我重试。', activity) }))
+    }))
   }
-
-  /**
-   * 模型要求「交付」文件时，把它们发到微信。
-   *
-   * 这是「能干活」的闭环：以前的会话能生成 docx，却只能回一句「文件在桌面上」。
-   * 事件给的是相对路径（相对会话 cwd），这里补全成绝对路径再交给宿主。
-   */
-  private async handlePresented(peerId: string, event: unknown): Promise<void> {
-    const send = this.options.sendFiles
-    if (send === undefined) return
-
-    const data = isRecord(event) ? event['data'] : undefined
-    const files = isRecord(data) ? data['files'] : undefined
-    if (!Array.isArray(files)) return
-
-    const paths: string[] = []
-    for (const item of files) {
-      const path = isRecord(item) && typeof item['path'] === 'string' ? item['path'].trim() : ''
-      if (path === '') continue
-      paths.push(isAbsolute(path) || this.options.cwd === undefined ? path : resolve(this.options.cwd, path))
-    }
-    if (paths.length === 0) return
-
-    this.clearProgress(peerId)
-    try {
-      await send(peerId, paths, this.contextTokens.get(peerId))
-      this.options.report?.('已发送文件', { peerId, count: paths.length })
-    } catch (error) {
-      this.options.report?.('发送文件失败', { peerId, error: String(error) })
-      this.notice(peerId, `文件没发出去：${error instanceof Error ? error.message : String(error)}`)
+  private reportDelivery(peerId: string, report: DeliveryReport): void {
+    this.options.report?.(report.status === 'accepted' ? '回复已被微信服务端接受' : `回复投递结果：${report.status}`, { peerId })
+  }
+  private onTurnEnd(conversation: PeerConversation, event: Record<string, unknown>, turn?: number): void {
+    const activity = conversation.finish(turn)
+    if (!activity) return
+    if (turn !== undefined && activity.pendingMessages.size) return
+    this.clearProgress(conversation.peerId); this.options.approvals?.cancel(conversation.peerId)
+    const data = isRecord(event.data) ? event.data : {}, reason = isRecord(data.reason) ? data.reason : {}
+    switch (reason.kind) {
+      case 'error': this.notice(conversation, '这一轮没完成，消息和已完成的步骤仍然保留。可以让我重试。', activity); break
+      case 'blocked': this.notice(conversation, '这段会话暂时无法继续，可以发“新对话”重新开始。', activity); break
+      case 'max-tokens': this.notice(conversation, '回答达到长度上限，可以让我接着说。', activity); break
+      case 'aborted': this.notice(conversation, '这一轮已中断。', activity); break
     }
   }
-
-  /**
-   * 一轮结束时的收尾与反馈。
-   *
-   * `turn/end.reason.kind` 的取值来自 session 的事件定义：
-   * `error` / `blocked` / `max-tokens` / `aborted`。以前一个都没接，
-   * 于是「模型报错」「等你审批」「被截断」在微信里全都表现为「已读不回」。
-   */
-  private onTurnEnd(peerId: string, event: unknown): void {
-    this.clearProgress(peerId)
-    this.turnActive.delete(peerId)
-    // 一轮结束时还挂着的审批永远不会有人答了，直接判取消，别让它拖到超时。
-    this.options.approvals?.cancel(peerId)
-
-    const data = isRecord(event) ? event['data'] : undefined
-    const reason = isRecord(data) ? data['reason'] : undefined
-    const kind = isRecord(reason) ? reason['kind'] : undefined
-
-    switch (kind) {
-      case 'error': {
-        const failure = isRecord(reason) ? reason['error'] : undefined
-        const message = isRecord(failure) && typeof failure['message'] === 'string' ? failure['message'] : ''
-        this.options.report?.('这一轮失败', { peerId, message })
-        this.notice(peerId, message === '' ? '这一轮没跑通，等会儿再试一次？' : `这一轮没跑通：${message}`)
-        return
-      }
-      case 'blocked':
-        // 这个 reason 不是「等审批」：它来自 agent 前置条件（会话已归档、目标轮次过期）。
-        // 审批不会结束一轮——它挂在这一步的工具调用里，答复后继续。
-        this.notice(peerId, '这一轮被前置条件挡下了（会话可能已归档），可以发“新对话”重开一段。')
-        return
-      case 'max-tokens':
-        this.notice(peerId, '回答到长度上限断了，让我接着说就行。')
-        return
-      case 'aborted':
-        this.notice(peerId, '这一轮被中断了。')
-        return
-      default:
-        return
-    }
+  memoryActivity(peerId: string): MemoryActivity | undefined {
+    for (const route of this.routes.values()) if (route.conversation.peerId === peerId && route.generation === route.conversation.generation) return route.conversation.activity
+    return undefined
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-/** 传输层超时（我们自己的 hold 到点了），不是服务端拒绝。 */
-function isTimeout(error: unknown): boolean {
-  const classification = (error as { classification?: { type?: string } } | null)?.classification
-  return classification?.type === 'timeout'
+  async context(peerId: string): Promise<string> { const conversation = await this.conversation(peerId); return await this.history.context(peerId, conversation.generation) }
+  contextTokenFor(peerId: string): string | undefined { return this.contextTokens.get(peerId) }
+  setApprovals(approvals: NonNullable<ChannelOptions['approvals']>): void { this.options.approvals = approvals }
+  peerForSession(sessionId: string): string | undefined { const route = this.routes.get(sessionId); return route?.generation === route?.conversation.generation ? route?.conversation.peerId : undefined }
+  knownPeers(): readonly string[] { return this.activity.peers() }
+  getCursor(): string | undefined { return this.cursor }
+  async whenIdle(): Promise<void> {
+    for (const pending of this.conversations.values()) { const conversation = await pending; if (conversation.pending.length) this.track(this.flush(conversation)) }
+    while (this.jobs.size) await Promise.allSettled([...this.jobs])
+    await this.options.replies.whenIdle()
+  }
+  async stop(): Promise<void> {
+    this.running = false; this.closed = true; this.abort?.abort(); this.unsubscribe?.(); this.unsubscribe = undefined
+    for (const pending of this.conversations.values()) {
+      const conversation = await pending
+      conversation.close(); this.options.replies.cancel(conversation.peerId); this.clearProgress(conversation.peerId)
+      this.options.approvals?.cancel(conversation.peerId)
+    }
+    this.controls.dispose()
+    await this.options.sessions.disposeAll?.()
+    await this.whenIdle(); await this.activity.flush?.()
+  }
 }

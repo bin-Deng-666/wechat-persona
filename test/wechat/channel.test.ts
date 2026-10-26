@@ -169,7 +169,7 @@ describe('Channel.run', () => {
             assert.equal(params.cursor, undefined)
             return { msgs: [userMessage()], get_updates_buf: 'cursor-2', longpolling_timeout_ms: 35000 }
           }
-          // 第二次轮询时停掉自己：模拟宿主关闭。
+          await channel.whenIdle()
           await channel.stop()
           throw new Error('aborted')
         },
@@ -544,7 +544,7 @@ describe('连发合并与失败反馈', () => {
       data: { reason: { kind: 'error', error: { message: '模型返回了 400' } } },
     })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.ok(sent.some(item => item.text.includes('模型返回了 400')), JSON.stringify(sent))
+    assert.ok(sent.some(item => item.text.includes('这一轮没完成')), JSON.stringify(sent))
   })
 
   it('被前置条件挡下时说清楚（这不是等审批）', async () => {
@@ -552,7 +552,7 @@ describe('连发合并与失败反馈', () => {
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'blocked' } } })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.ok(sent.some(item => item.text.includes('前置条件')))
+    assert.ok(sent.some(item => item.text.includes('暂时无法继续')))
   })
 
   it('长度截断时说清楚，而不是沉默', async () => {
@@ -567,7 +567,7 @@ describe('连发合并与失败反馈', () => {
     const { channel, sent } = setup({ progressAfterMs: 20 })
     await channel.handle(userMessage())
     await new Promise(resolve => setTimeout(resolve, 80))
-    assert.ok(sent.some(item => item.text.includes('还在弄')), JSON.stringify(sent))
+    assert.ok(sent.some(item => item.text.includes('还在处理')), JSON.stringify(sent))
   })
 
   it('正常结束时不多嘴', async () => {
@@ -591,14 +591,8 @@ describe('交付文件', () => {
       access: createAccessPolicy({ owner: 'wxid-owner' }),
       personas: new PersonaStore('/nonexistent'),
       defaultPersona: 'default',
-      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {} }),
-      events,
-      report: () => {},
-      sleep: async () => {},
-      mergeWindowMs: 0,
-      progressAfterMs: 0,
-      cwd: '/work',
-      sendFiles: async (peerId, paths, token) => { sentFiles.push({ peerId, paths, token }) },
+      replies: new ReplyQueue({ send: async () => {}, sleep: async () => {}, sendFile: async (peerId, path, token) => { sentFiles.push({ peerId, paths: [path], token }) } }),
+      events, mergeWindowMs: 0, progressAfterMs: 0, cwd: '/work',
     })
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', {
@@ -606,8 +600,8 @@ describe('交付文件', () => {
       data: { files: [{ path: 'out/报告.docx' }, { path: '/abs/表格.xlsx' }, { nope: 1 }] },
     })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.equal(sentFiles.length, 1)
-    assert.deepEqual(sentFiles[0]?.paths, ['/work/out/报告.docx', '/abs/表格.xlsx'])
+    assert.equal(sentFiles.length, 2)
+    assert.deepEqual(sentFiles.flatMap(item => item.paths), ['/work/out/报告.docx', '/abs/表格.xlsx'])
     assert.equal(sentFiles[0]?.token, 'ctx-1')
   })
 
@@ -622,18 +616,17 @@ describe('交付文件', () => {
       access: createAccessPolicy({ owner: 'wxid-owner' }),
       personas: new PersonaStore('/nonexistent'),
       defaultPersona: 'default',
-      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
+      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sendFile: async () => { throw new Error('文件太大') }, sleep: async () => {} }),
       events,
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
       progressAfterMs: 0,
-      sendFiles: async () => { throw new Error('文件太大') },
     })
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'deliverables/presented', data: { files: [{ path: '/a.docx' }] } })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.ok(sent.some(text => text.includes('文件太大')), JSON.stringify(sent))
+    assert.ok(sent.some(text => text.includes('文件未确认发出')), JSON.stringify(sent))
   })
 })
 
@@ -669,6 +662,7 @@ describe('设置卡片', () => {
   it('/menu 发一张卡片', async () => {
     const { channel, sent } = setup()
     await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
+    await channel.whenIdle()
     assert.equal(sent.length, 1)
     assert.match(sent[0] ?? '', /设置/)
     assert.match(sent[0] ?? '', /1 {2}人格/)
@@ -714,7 +708,7 @@ describe('设置卡片', () => {
 })
 
 describe('记忆标记', () => {
-  it('标记不进聊天，但会被记住', async () => {
+  it('旧版标记不泄露到微信，也不能绕过来源校验写入记忆', async () => {
     const { sessions } = fakeSessions()
     const { events, emit } = fakeEvents()
     const sent: string[] = []
@@ -746,6 +740,6 @@ describe('记忆标记', () => {
     })
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.deepEqual(sent, ['记下了。'])
-    assert.deepEqual(remembered, [['用户叫阿彬']])
+    assert.deepEqual(remembered, [])
   })
 })

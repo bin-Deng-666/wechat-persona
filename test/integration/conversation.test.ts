@@ -12,7 +12,7 @@ import { Channel } from '../../src/wechat/channel.ts'
 import { PeerSystemPrompt } from '../../src/dsh/system-prompt.ts'
 import { PeerSessions, type AgentHandleLike, type AgentRegistryLike } from '../../src/dsh/sessions.ts'
 import { PeerGenerations } from '../../src/chat/generations.ts'
-import { PeerMemory } from '../../src/chat/memory.ts'
+import { PeerMemory } from '../../src/memory/store.ts'
 import { ReplyQueue } from '../../src/reply/queue.ts'
 import { createMediaPreparer } from '../../src/dsh/attachments.ts'
 import { createAccessPolicy } from '../../src/wechat/access.ts'
@@ -31,7 +31,7 @@ async function fixture(t: TestContext) {
   }
   const personas = new PersonaStore(join(root, 'personas'))
   const settings = new ChatSettingsStore(join(root, 'chats'))
-  const memory = new PeerMemory(join(root, 'memories.json'))
+  const memory = new PeerMemory(join(root, 'memory'))
   const stickers = new StickerLibrary(join(root, 'stickers'))
   const prompts = new PeerSystemPrompt({ personas, settings, memory, stickers, defaultPersona: () => 'alpha' })
   const live = new Map<string, AgentHandleLike['agent']>()

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import { extractAssistantText } from '../../src/dsh/events.ts'
-import { humanThinkingMs, isThrottled, ReplyQueue } from '../../src/reply/queue.ts'
+import { isThrottled, ReplyQueue } from '../../src/reply/queue.ts'
 
 const textEvent = (text: string, extra: Record<string, unknown> = {}) => ({
   type: 'assistant/message',
@@ -158,31 +158,11 @@ describe('ReplyQueue', () => {
   })
 })
 
-describe('humanThinkingMs', () => {
-  it('随长度增长但有上限', () => {
-    assert.ok(humanThinkingMs('短', () => 1) < humanThinkingMs('x'.repeat(100), () => 1))
-    assert.ok(humanThinkingMs('x'.repeat(5_000), () => 1) <= 1_200)
-  })
-
-  it('有抖动，不是固定值', () => {
-    assert.notEqual(humanThinkingMs('hello', () => 0), humanThinkingMs('hello', () => 0.99))
-  })
-
-  it('不会为负或为 0', () => {
-    assert.ok(humanThinkingMs('', () => 0) > 0)
-  })
-})
-
-describe('思考停顿', () => {
-  it('系统提示不等待，模型回复才等待', async () => {
-    const waited: string[] = []
-    const queue = new ReplyQueue({
-      send: async () => {},
-      sleep: async () => {},
-      thinkingMs: (_peer, text) => { waited.push(text); return 0 },
-    })
+describe('发送等待', () => {
+  it('第一条回复没有额外的随机思考延迟', async () => {
+    const waits: number[] = []
+    const queue = new ReplyQueue({ send: async () => {}, sleep: async ms => { waits.push(ms) } })
     await queue.enqueue('p1', '普通回复')
-    await queue.enqueue('p1', '命令回复', undefined, undefined, { immediate: true })
-    assert.deepEqual(waited, ['普通回复'])
+    assert.deepEqual(waits, [])
   })
 })

@@ -20,6 +20,8 @@ export interface SendImageOptions {
   baseUrl: string
   token: string
   to: string
+  clientId?: string
+  signal?: AbortSignal
   contextToken?: string
   /** 明文图片字节。 */
   data: Uint8Array
@@ -42,6 +44,7 @@ export async function sendImage(options: SendImageOptions): Promise<void> {
     to: options.to,
     data: options.data,
     mediaType: 1,
+    signal: options.signal,
     ...(options.cdnBaseUrl === undefined ? {} : { cdnBaseUrl: options.cdnBaseUrl }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     ...(options.filekey === undefined ? {} : { filekey: options.filekey }),
@@ -53,6 +56,8 @@ export async function sendImage(options: SendImageOptions): Promise<void> {
     label: 'sendmessage(image)',
     token: options.token,
     to: options.to,
+    clientId: options.clientId,
+    signal: options.signal,
     encryptQueryParam: uploaded.downloadParam,
     // 图片的 key 用「16 字节原样」的 base64（文件是 hex 字符串的 base64，两者不同）。
     aesKeyBase64: uploaded.key.toString('base64'),

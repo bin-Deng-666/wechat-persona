@@ -7,6 +7,7 @@
  * @module wechat-persona
  */
 
+import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { watch, type FSWatcher } from 'node:fs'
@@ -25,9 +26,10 @@ import { sendFile } from '../ilink/send-file.ts'
 import { createAccessPolicy } from '../wechat/access.ts'
 import { ApprovalBridge } from '../dsh/approvals.ts'
 import { PeerActivity } from '../chat/activity.ts'
-import { PeerMemory } from '../chat/memory.ts'
+import { PeerMemory } from '../memory/store.ts'
+import { ConversationStore } from '../chat/history.ts'
 import { PeerSystemPrompt } from '../dsh/system-prompt.ts'
-import { humanThinkingMs, ReplyQueue } from '../reply/queue.ts'
+import { ReplyQueue, type SendContext } from '../reply/queue.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from '../dsh/attachments.ts'
 import { compactPeer, type CompactionEngineLike } from '../dsh/compaction.ts'
 import type { MessageItem } from '../ilink/types.ts'
@@ -43,7 +45,7 @@ import { renderQrSvg } from '../auth/qr.ts'
 import { name } from './identity.ts'
 
 /** 本构建声明的版本，进 `channel_version` 头。 */
-const CHANNEL_VERSION = '0.1.0'
+const CHANNEL_VERSION = '0.3.0-dev.0'
 
 /** 单个出站文件的上限：整份文件一次性读进内存，再大就会把进程拖垮。 */
 const MAX_SEND_FILE_BYTES = 100 * 1024 * 1024
@@ -124,8 +126,7 @@ export class Coordinator {
     this.generations = new PeerGenerations(join(dataDir, 'generations.json'))
     // 聊天列表和最后活跃时间在重启后保留。
     this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
-    // 跨会话记忆：模型用 [记住: …] 写，下一轮注入回去。
-    this.memory = new PeerMemory(join(dataDir, 'memories.json'))
+    this.memory = new PeerMemory(join(dataDir, 'memory'))
     this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
     this.login = new LoginSession({
       api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
@@ -381,12 +382,17 @@ export class Coordinator {
       } else {
         this.report('会话将挂载 preset', { agentPreset })
       }
+      const history = new ConversationStore(join(this.dataDir, 'conversations', createHash('sha256').update(account.accountId).digest('hex')))
+      let channel: Channel
       const prompts = new PeerSystemPrompt({
         personas: this.store,
         settings: this.chatSettings,
         defaultPersona: () => this.config.defaultPersona.get(),
         memory: this.memory,
         stickers: this.stickers,
+        history,
+        activity: peerId => channel?.memoryActivity(peerId),
+        conversationContext: async peerId => await channel.context(peerId),
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         report: this.report,
       })
@@ -414,8 +420,10 @@ export class Coordinator {
       const api = createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' })
       const typing = new TypingIndicator({ api, baseUrl: account.baseUrl, token: account.botToken, report: this.report })
       const replies = new ReplyQueue({
-        sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
-        send: async (peerId, text, contextToken) => {
+        history,
+        sendSticker: async (peerId, stickerName, contextToken, context) => await this.sendSticker(peerId, stickerName, contextToken, context),
+        sendFile: async (peerId, path, token, context) => await this.sendFile(peerId, path, token, context),
+        send: async (peerId, text, contextToken, context) => {
           await api.sendText({
             baseUrl: account.baseUrl,
             endpoint: 'ilink/bot/sendmessage',
@@ -423,33 +431,27 @@ export class Coordinator {
             token: account.botToken,
             to: peerId,
             text,
+            clientId: context.clientId,
+            signal: context.signal,
             ...(contextToken === undefined ? {} : { contextToken }),
           })
         },
-        // 想一下再发：秒回是最像机器的地方。
-        thinkingMs: (_peerId, text) => humanThinkingMs(text),
-        // 每发一条，微信都会把「正在输入」清掉；多气泡之间重报一次，读起来才连贯。
+        // Refresh typing between ordered delivery units.
         onChunk: peerId => { void typing.start(peerId) },
         onSlowSend: (peerId, spent, chars) => { this.report('单次发送很慢', { peerId, spent, chars }) },
         // 一条回复（可能好几个气泡）彻底发完才收尾——否则气泡之间会一闪一闪。
         onDrain: peerId => { void typing.stop(peerId) },
         onGiveUp: (peerId, text, error) => {
           this.report('回复最终失败', { peerId, chars: text.length, error: String(error) })
-          // 用户在微信那头只会看到「没回复」。给一句明确的话，比无限等待好。
-          void api.sendText({
-            baseUrl: account.baseUrl,
-            endpoint: 'ilink/bot/sendmessage',
-            label: 'sendmessage(fallback)',
-            token: account.botToken,
-            to: peerId,
-            text: '（这条没能发出去，可能是网络或限流，稍后再试一次）',
-          }).catch(() => {})
+          // The durable delivery outcome is shown to the next model request.
+          // A direct fallback would bypass ordering and cancellation.
         },
         // 1 秒是「同一条回复的相邻气泡」的节奏；真正的限流由 ret:-2 的退避兜住。
         minIntervalMs: 1_000,
       })
 
-      const channel = new Channel({
+      channel = new Channel({
+        history,
         api,
         account: { baseUrl: account.baseUrl, token: account.botToken, userId: account.userId },
         sessions,
@@ -463,9 +465,6 @@ export class Coordinator {
         memory: this.memory,
         modelLabel: this.modelLabel(),
         cwd: this.config.cwd.get(),
-        sendFiles: async (peerId, paths, contextToken) => {
-          for (const path of paths) await this.sendFile(peerId, path, contextToken)
-        },
         stickers: this.stickers,
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
@@ -480,7 +479,8 @@ export class Coordinator {
         },
         prepareMedia: this.mediaPreparer(),
         // 压缩由宿主提供；没有这个服务时命令会回一句「这个宿主没有提供压缩能力」。
-        compact: async (peerId, generation) => await compactPeer({
+        compact: async (peerId, generation, signal) => await compactPeer({
+          signal,
           engine: this.ctx.get('compaction') as CompactionEngineLike | undefined,
           agentAt: async (id, gen) => await sessions.agentAt(id, gen),
           peerId,
@@ -492,7 +492,7 @@ export class Coordinator {
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。
       const approvals = new ApprovalBridge({
         // 审批提示要立刻出现：用户正等着决定，不该先「想」两秒。
-        ask: async (peerId, text) => { await replies.enqueue(peerId, text, channel.contextTokenFor(peerId), undefined, { immediate: true }) },
+        ask: async (peerId, text) => { const outcome = await replies.enqueue(peerId, text, channel.contextTokenFor(peerId), undefined, { immediate: true }); if (outcome.status !== 'accepted') throw new Error('审批提示未确认发出') },
         report: this.report,
       })
       this.approvals = approvals
@@ -585,7 +585,7 @@ export class Coordinator {
    * 上限 100 MiB：协议本身没写限制，但整份文件是一次性读进内存、一次性 POST 的，
    * 更大的文件在这个实现里只会把进程拖垮。宁可回一句「太大了」。
    */
-  private async sendFile(peerId: string, path: string, contextToken: string | undefined): Promise<void> {
+  private async sendFile(peerId: string, path: string, contextToken: string | undefined, context?: SendContext): Promise<void> {
     if (this.account === undefined) throw new Error('还没登录')
     const size = (await stat(path)).size
     if (size > MAX_SEND_FILE_BYTES) {
@@ -599,12 +599,14 @@ export class Coordinator {
       to: peerId,
       data,
       fileName: basename(path),
+      clientId: context?.clientId,
+      signal: context?.signal,
       ...(contextToken === undefined ? {} : { contextToken }),
     })
   }
 
   /** 发一张本地表情：找到文件、读出来、走图片发送。 */
-  private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined): Promise<boolean> {
+  private async sendSticker(peerId: string, stickerName: string, contextToken: string | undefined, context?: SendContext): Promise<boolean> {
     if (this.account === undefined) return false
     const file = await this.stickers.find(stickerName, peerId)
     if (file === undefined) {
@@ -619,6 +621,8 @@ export class Coordinator {
       to: peerId,
       ...(contextToken === undefined ? {} : { contextToken }),
       data,
+      clientId: context?.clientId,
+      signal: context?.signal,
     })
     return true
   }

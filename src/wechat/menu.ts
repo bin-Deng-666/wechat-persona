@@ -106,7 +106,7 @@ export function renderMenu(panel: MenuPanel, view: MenuView): string {
     case 'memory': {
       const lines = ['记忆', '']
       if (view.memoryCount === 0) {
-        lines.push('还没记住什么。说「记住：…」我就能记下来。')
+        lines.push('还没有个人记忆。可保留跨对话有用的个人信息，例如说「记住我的沟通偏好……」。')
       } else {
         lines.push(`已记 ${String(view.memoryCount)} 条：`)
         for (const fact of view.memoryFacts.slice(0, 8)) lines.push(`· ${fact}`)

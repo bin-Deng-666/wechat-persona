@@ -112,6 +112,8 @@ export interface ApiClientOptions {
 }
 
 export interface RequestOptions {
+  /** Stable per logical delivery; reused across retries. */
+  clientId?: string
   baseUrl: string
   /** 已编码的路径与查询串。 */
   endpoint: string
@@ -321,8 +323,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       const msg: Record<string, unknown> = {
         from_user_id: '',
         to_user_id: params.to,
-        // 每条都带自己的 client_id，服务端才能分清「重试」与「新消息」。
-        client_id: randomUUID(),
+        client_id: params.clientId ?? randomUUID(),
         message_type: 2,
         message_state: 2,
         item_list: [{ type: 1, text_item: { text: params.text } }],
@@ -371,7 +372,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       const msg: Record<string, unknown> = {
         from_user_id: '',
         to_user_id: params.to,
-        client_id: randomUUID(),
+        client_id: params.clientId ?? randomUUID(),
         message_type: 2,
         message_state: 2,
         item_list: [{
@@ -407,7 +408,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       const msg: Record<string, unknown> = {
         from_user_id: '',
         to_user_id: params.to,
-        client_id: randomUUID(),
+        client_id: params.clientId ?? randomUUID(),
         message_type: 2,
         message_state: 2,
         item_list: [{

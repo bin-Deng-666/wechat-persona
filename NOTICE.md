@@ -21,6 +21,34 @@
   仅参考产品设计（聊天/助手分权、按聊天授权、人格卡与表情包的组织方式）。
   该项目的 Windows Hook 与数据库解密方案本项目不使用。
 
+## 个人记忆模块
+
+`src/memory/model.ts`、`evidence.ts`、`search.ts` 及来源/版本/删除策略部分改编自 **agent-personal-memory**。其 pi UI、全局记忆文件和历史扫描任务未迁入；本项目使用独立的微信联系人存储。完整原许可同时保存在 `src/memory/LICENSE`。
+
+```text
+MIT License
+
+Copyright (c) 2026 Agent Personal Memory contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## 依赖
 
 运行时依赖与开发依赖的许可证以 `package.json` 与锁文件为准；

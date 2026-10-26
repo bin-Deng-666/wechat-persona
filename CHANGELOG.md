@@ -8,6 +8,38 @@ Versions before `0.2.0` are development builds and were never published.
 
 ## [Unreleased]
 
+## [0.3.0-dev.0] - 2026-10-26
+
+### Changed
+
+- Rebuilt conversation handling around one activity per contact, ordered input
+  preparation and DSH steering. Stop cancels pending output; new conversations
+  reject late text, files and turn events from older generations.
+- Text, stickers and files share a cancellable outbox. Each delivery has a stable
+  retry ID and durable accepted/failed/unknown/cancelled status. Accepted means
+  server acceptance, never recipient read acknowledgement.
+- Compaction runs outside ingress and can be cancelled. Task snapshots preserve
+  goals, latest constraints, completed work, pending work and questions across it.
+- Removed random post-generation thinking delays. Chat bubble size no longer
+  changes the requested depth of an entire answer.
+- Escaped contact session IDs include a hash to prevent punctuation collisions;
+  old legacy session logs are preserved and not automatically rewritten.
+
+### Added
+
+- Contact-scoped memory search/write tools with original user evidence, five
+  memory categories, scope/certainty, version checks and deletion suppression.
+  Domain/search/evidence logic is adapted from MIT agent-personal-memory.
+- Durable input identity, restart recovery and delivery context for later turns.
+- Real DSH tool-dispatch and lifecycle regressions, plus a fixed multi-turn
+  headless evaluation runner that records blocked runs honestly.
+
+### Migration
+
+- Legacy memories without original evidence remain visible as unverified records;
+  they are not automatically injected or promoted to trusted facts. Original
+  files and old sessions are retained. No personal-memory data from pi is copied.
+
 ## [0.2.0-dev.0] - 2026-10-26
 
 ### Changed

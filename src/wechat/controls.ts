@@ -1,10 +1,10 @@
 /** 微信控制消息：中文命令和数字菜单。普通对话投递、轮询与模型事件由 Channel 管理。 */
 import { DEFAULT_REPLY_PLAN, resolvePlan, type ReplyPlan } from '../reply/bubbles.ts'
-import type { ReplyQueue } from '../reply/queue.ts'
+import type { ReplyQueue, ReplyScope } from '../reply/queue.ts'
 import { PersonaStore } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../chat/settings.ts'
 import type { PeerGenerations } from '../chat/generations.ts'
-import type { PeerMemory } from '../chat/memory.ts'
+import type { PeerMemory } from '../memory/store.ts'
 import type { StickerLibrary } from '../stickers/library.ts'
 import { normalizeStickerName } from '../stickers/markers.ts'
 import { MENU_TTL_MS, parseChoice, renderMenu, resolveChoice, type MenuPanel, type MenuView } from './menu.ts'
@@ -17,11 +17,12 @@ export interface ChatControlsOptions {
   settings?: ChatSettingsStore
   generations?: PeerGenerations
   permissionLabel?: string
-  memory?: Pick<PeerMemory, 'get' | 'clear'>
+  memory?: Pick<PeerMemory, 'get' | 'clear' | 'legacy'>
   modelLabel?: string
   stickers?: Pick<StickerLibrary, 'names' | 'adoptLatest'>
   sendSticker?: (peerId: string, name: string, token: string | undefined) => Promise<boolean>
   replies: ReplyQueue
+  scopeFor?: (peerId: string) => ReplyScope | undefined
   report?: (line: string, detail?: unknown) => void
   now?: () => number
   planFor: (peerId: string) => ReplyPlan | undefined
@@ -30,6 +31,7 @@ export interface ChatControlsOptions {
   lastSeen: (peerId: string) => number | undefined
   turnsFor: (peerId: string) => number
   cancelTurn: (peerId: string, generation: number) => Promise<boolean>
+  newConversation: (peerId: string) => Promise<number>
   /** 压缩当前对话；缺失表示这个宿主没有压缩能力。 */
   compactConversation?: (peerId: string, generation: number) => Promise<CompactOutcome>
 }
@@ -41,6 +43,7 @@ export class ChatControls {
   constructor(options: ChatControlsOptions) { this.options = options }
 
   dispose(): void { this.menus.clear() }
+  closeMenu(peerId: string): void { this.menus.delete(peerId) }
 
   /** 打开设置卡片（`/menu`）。 */
   async openMenu(peerId: string, panel: MenuPanel = 'root', contextToken?: string): Promise<void> {
@@ -99,7 +102,7 @@ export class ChatControls {
           await this.answer(peerId, '这个部署没有开启多段对话。', contextToken)
           return
         }
-        await this.options.generations.bump(peerId)
+        await this.options.newConversation(peerId)
         await this.answer(peerId, '开了新对话：之前的内容还在记录里，但这轮开始不再带进上下文。', contextToken)
         return
       }
@@ -176,8 +179,8 @@ export class ChatControls {
       personaName: card.name,
       personaChoices: [...snapshot.personas.values()].map(persona => ({ id: persona.card.id, name: persona.card.name })),
       model: this.options.modelLabel ?? '',
-      memoryCount: this.options.memory?.get(peerId).length ?? 0,
-      memoryFacts: this.options.memory?.get(peerId) ?? [],
+      memoryCount: (this.options.memory?.get(peerId).length ?? 0) + (this.options.memory?.legacy(peerId).length ?? 0),
+      memoryFacts: [...(this.options.memory?.get(peerId).map(memory => `[${memory.type}] ${memory.content}`) ?? []), ...(this.options.memory?.legacy(peerId).map(text => `[旧版未核实] ${text}`) ?? [])],
       maxChars: plan.softChars,
       split: plan.splitMode,
       overridden: settings.maxChars !== undefined || settings.split !== undefined,
@@ -190,8 +193,8 @@ export class ChatControls {
   private async answer(peerId: string, text: string, contextToken: string | undefined): Promise<void> {
     const plan = this.options.planFor(peerId) ?? DEFAULT_REPLY_PLAN
     const started = (this.options.now ?? Date.now)()
-    await this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' }, { immediate: true })
-    this.options.report?.(`卡片已发出（${String((this.options.now ?? Date.now)() - started)}ms）`)
+    void this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' }, { immediate: true, scope: this.options.scopeFor?.(peerId) })
+      .then(outcome => this.options.report?.(`卡片投递：${outcome.status}（${String((this.options.now ?? Date.now)() - started)}ms）`))
   }
 
   /** 读这个聊天的设置；没有设置仓库时用默认值。 */
@@ -210,10 +213,11 @@ export class ChatControls {
    * 命令的回复走和模型回复同一条队列：这样限流、切分、失败提示都自动复用。
    */
   async execute(peerId: string, command: { name: string; args: string[] }, generation: number, contextToken: string | undefined): Promise<void> {
-    const reply = (text: string): void => {
+    const scope = this.options.scopeFor?.(peerId)
+    const reply = (text: string, currentScope?: ReplyScope): void => {
       const started = (this.options.now ?? Date.now)()
-      void this.options.replies.enqueue(peerId, text, contextToken, this.options.planFor(peerId), { immediate: true })
-        .then(() => this.options.report?.(`命令 /${command.name} 的回复已发出（${String((this.options.now ?? Date.now)() - started)}ms）`))
+      void this.options.replies.enqueue(peerId, text, contextToken, this.options.planFor(peerId), { immediate: true, scope: currentScope ?? scope })
+        .then(outcome => this.options.report?.(`命令 /${command.name} 投递：${outcome.status}（${String((this.options.now ?? Date.now)() - started)}ms）`))
     }
 
     switch (command.name) {
@@ -227,8 +231,8 @@ export class ChatControls {
           return
         }
         // 旧会话不 dispose：它的历史还在，只是这个聊天不再往那儿投递。
-        const next = await this.options.generations.bump(peerId)
-        reply(formatNewChat(next))
+        const next = await this.options.newConversation(peerId)
+        reply(formatNewChat(next), this.options.scopeFor?.(peerId))
         this.options.report?.('开了新对话', { peerId, generation: next })
         return
       }
@@ -327,7 +331,7 @@ export class ChatControls {
       case 'stop': {
         // 打断跑偏的一轮：微信里没有别的办法让它停下来。
         const cancelled = await this.options.cancelTurn(peerId, generation)
-        reply(cancelled ? '已打断这一轮。' : '现在没有在跑的活。')
+        reply(cancelled ? '已停止当前任务和待发送内容。' : '现在没有待处理的任务。', this.options.scopeFor?.(peerId))
         return
       }
 

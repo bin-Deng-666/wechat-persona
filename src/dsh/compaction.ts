@@ -60,6 +60,7 @@ export async function compactPeer(options: {
   agentAt: (peerId: string, generation?: number) => Promise<AgentHandleLike>
   peerId: string
   generation: number
+  signal?: AbortSignal
   report?: (line: string, detail?: unknown) => void
 }): Promise<CompactOutcome> {
   if (options.engine === undefined) return { kind: 'unavailable' }
@@ -75,10 +76,11 @@ export async function compactPeer(options: {
   if (typeof agent.runMaintenance !== 'function') return { kind: 'unavailable' }
 
   try {
-    const result = await options.engine.compactNow(agent, new AbortController().signal)
+    const result = await options.engine.compactNow(agent, options.signal ?? new AbortController().signal)
     if (result === null) return { kind: 'nothing' }
     return { kind: 'done', shadowed: result.shadowedSeqs.length, tokens: result.shadowedTokenCount }
   } catch (error) {
+    if (options.signal?.aborted) return { kind: 'cancelled' }
     const code = error instanceof Error && error.name === MANUAL_ERROR_NAME
       ? (error as { code?: unknown }).code
       : undefined

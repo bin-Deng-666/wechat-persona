@@ -62,12 +62,24 @@ src/
 │   ├── system-prompt.ts    会话作用域的系统提示词组装
 │   ├── attachments.ts      媒体转换为 DSH 附件
 │   ├── events.ts           最终 assistant/message 提取
+│   ├── memory.ts           当前 agent 的记忆与任务工具
+│   ├── compaction.ts       可取消的宿主压缩适配
 │   └── approvals.ts        微信审批桥
 ├── chat/
 │   ├── settings.ts         每个聊天独立设置
 │   ├── generations.ts      对话代次
-│   ├── memory.ts           记忆标记和持久化
+│   ├── conversation.ts     联系人活动、输入顺序、输出取消
+│   ├── history.ts          原始消息、批次、交付、任务快照
 │   └── activity.ts         最近活跃时间
+├── memory/
+│   ├── model.ts            分类、确定性、来源、版本与去重
+│   ├── evidence.ts         个人价值和证据检查
+│   ├── search.ts           相关检索与沟通习惯筛选
+│   ├── capture.ts          当前请求的来源与写入规则
+│   ├── store.ts            按联系人持久化、版本与删除记录
+│   └── policy.ts           模型可见的个人价值规则
+├── storage/
+│   └── atomic.ts           私有文件原子写入与串行修改
 ├── persona/
 │   ├── card.ts             人格卡类型、校验、归一化
 │   ├── prompt.ts           人格提示词纯函数
@@ -79,7 +91,7 @@ src/
 │   ├── image.ts            通用图片格式识别
 │   └── gif.ts              GIF 多帧合成和预览
 ├── reply/
-│   ├── queue.ts            文字和表情发送队列、限流、重试和节奏
+│   ├── queue.ts            可取消的文字/表情/文件队列与交付结果
 │   └── bubbles.ts          可选分条和长度规划
 ├── text/
 │   ├── split.ts            长文切分与代码块闭合
@@ -110,6 +122,8 @@ src/
 
 `app/` 是装配层，允许访问各模块。`wechat/` 驱动对话流程，`dsh/` 处理宿主接口，`ilink/` 处理微信协议。`persona/`、`chat/`、`stickers/` 管理各自数据。`media/`、`text/` 是通用处理模块。
 
+- 个人记忆与证据校验放 `memory/`，当前任务状态放 `chat/`；持久化原语放 `storage/`。
+
 表情名字和控制标记解析不依赖 `StickerLibrary` 的文件 IO。图片格式识别不依赖 iLink。DSH 的最终事件形状由 `dsh/events.ts` 解码，回复队列不负责理解宿主日志。
 
 `src/` 不导入 `scripts/` 或 `test/`。脚本单向复用源码。只有 `src/index.ts` 聚合公共 API；内部文件直接引用职责所属模块，不保留旧路径转发文件，也不为每个目录添加无意义的 index.ts。
@@ -131,4 +145,4 @@ node --test --experimental-strip-types "test/wechat/*.test.ts"
 
 类型检查包括源码、脚本和测试。测试命令递归匹配测试文件，避免调整目录后漏跑。
 
-运行时数据目录的格式保持原有约定，见 [../README.md](../README.md)。本次整理不迁移账号、聊天记录、记忆或表情原件。
+运行数据与迁移约定见 [../README.md](../README.md) 和 [design.md](design.md)。旧版无来源记忆保留供查看，新个人记忆写入 `memory/`；原始消息和交付记录写入 `conversations/`。

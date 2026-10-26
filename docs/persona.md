@@ -60,7 +60,7 @@ data/personas/jarvis/
 | `description` | | 一句话简介，显示在网页面板的人格列表里 |
 | `prompt.identity` | ✅ | 一句话立人设，写「你是谁」而不是「你要 helpful」 |
 | `prompt.style` / `rules` / `forbidden` | | 各最多 8 条，每条 ≤ 60 字，超出截断并警告 |
-| `reply.maxChars` | | 软约束（写进 prompt + 发送时硬切），缺省 120 |
+| `reply.maxChars` | | 闲聊表达的字数目标，缺省 120；任务回答按需要完整表达，普通人格不据此强拆气泡 |
 | `reply.split` | | `paragraph` / `sentence` / `none`，缺省 `paragraph` |
 | `examples` | | 最多 5 组，纯文本 few-shot |
 | `media.sendStickers` | | 是否把当前联系人的表情目录与识别指令写进系统提示词，缺省 `true` |
@@ -108,8 +108,8 @@ data/personas/jarvis/
 [风格]      style，一行一条
 [规则]      rules
 [禁止]      forbidden
-[此刻]      星期 + 时间 + 对方备注名 + 记忆摘要（有才写）
-[长度]      「一般不超过 N 字，除非对方要求展开」
+[此刻]      日期 + 星期 + 时间 + 对方标识 + 沟通习惯（有才写）
+[表达长度]  闲聊字数目标；任务说明与必要解释按内容展开
 [示例]      examples 渲染成「对方: … / 你: …」
 ```
 

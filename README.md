@@ -64,7 +64,9 @@ src/
 ├── wechat/         消息通道、命令执行、数字菜单、准入、输入状态
 ├── ilink/          微信协议、API、登录状态机、CDN、AES、收发
 ├── dsh/            会话、系统提示词、附件、事件、审批的宿主适配
-├── chat/           聊天设置、对话代次、记忆、活跃状态
+├── chat/           对话活动、原始消息、交付记录、设置与代次
+├── memory/         个人记忆、原话证据、检索、版本与删除记录
+├── storage/        私有文件的原子写入与串行变更
 ├── persona/        人格卡校验、加载和提示词渲染
 ├── stickers/       表情原件和联系人目录；独立的文本标记解析
 ├── media/          通用图片格式识别、GIF 预览
@@ -73,7 +75,7 @@ src/
 └── panel/          网页渲染、HTTP 处理和宿主路由注册
 ```
 
-完整目录、依赖边界和代码放置规则见 [docs/structure.md](docs/structure.md)。测试按模块组织在 `test/` 的对应子目录，跨模块场景在 `test/integration/`；`npm test` 递归运行。新安装包在 `release/`，根目录原有安装包已归档到 `release/archive/`。
+完整目录、依赖边界和代码放置规则见 [docs/structure.md](docs/structure.md)。测试按模块组织在 `test/` 的对应子目录，跨模块场景在 `test/integration/`；`npm test` 递归运行。新安装包在 `release/`，构建产物与运行数据不提交到仓库。
 
 运行数据默认位于 `~/.dsh/wechat-persona`：
 
@@ -82,7 +84,10 @@ account.json                   登录凭据（0600；删除即退出）
 cursor.json                    按账号保存轮询游标
 generations.json               “新对话”的会话代次
 last-seen.json                 聊天列表和最后活跃时间
-memories.json                  按联系人保存的记忆
+memory/<联系人hash>.json       有来源和版本的个人记忆、删除记录、旧版未核实资料
+conversations/<账号hash>/<联系人hash>.json
+                               原始消息、会话批次、逐项交付结果、任务状态
+memories.json                  旧版文件保留；无来源内容不自动成为可信个人事实
 logs/plugin-YYYY-MM-DD.log      诊断日志
 personas/<id>/persona.json      人格卡，见 docs/persona.md
 chats/<peer>/settings.json      人格、启用状态、长度、分条设置
@@ -139,7 +144,9 @@ npm run login -- --png /tmp/wechat-qr.png
 
 - 默认仅扫码登录的微信账号可驱动机器人；`allow` 可显式指定白名单。
 - `cordis.patch.yml` 中桌面安装默认权限为 `danger-full-access`。要在微信收审批提示并回 `1/2/3`，改为 `workspace-write`。
-- 模型可用 `[记住: 简短事实]` 保存对方明确提供的个人信息。“菜单 → 记忆”可查看或清空；记忆进入系统提示词。自动长历史摘要尚未实现。
+- 模型可用 `wechat_memory_search` / `wechat_memory_write` 检索和保存有原话来源的个人信息；任务状态使用独立的 `wechat_task_update`，上下文压缩后仍可见。“菜单 → 记忆”可查看或清空。普通聊天只自动加载沟通习惯，其他类别按需检索。旧版无来源记忆保留为未核实资料，不自动注入。
+- “停止”同时取消模型任务和未发出的气泡；“新对话”使旧代次的迟到输出失效。任务中的补充进入模型的下一步骤，媒体处理保持原始顺序。
+- 文本、表情和文件共用发送队列；重试复用同一发送 ID，记录服务端接受、失败、取消和结果不明。服务端接受不代表用户已读。
 - 模型用 `present` 交付的文件可回传到微信，单文件上限 100 MiB。
 - iLink 当前不提供可靠群聊、出站原生定位、原生按钮和出站语音支持。
 - 真机排障先看 `logs/plugin-*.log`；协议探针为 `scripts/probe-login.ts`。

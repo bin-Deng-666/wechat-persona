@@ -24,6 +24,8 @@ const config: UserConfig = {
       ' * iLink protocol implemented from the public specification of',
       ' * @tencent-weixin/openclaw-weixin (MIT, Copyright (C) 2026 Tencent).',
       ' * Implementation notes from dsh-channel-wechat (MIT, Copyright (c) wang.x).',
+      ' * Personal-memory domain/search/evidence adapted from agent-personal-memory',
+      ' * (MIT, Copyright (c) 2026 Agent Personal Memory contributors).',
       ' * See NOTICE.md for the full notices.',
       ' */',
     ].join('\n'),

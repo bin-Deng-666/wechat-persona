@@ -22,6 +22,8 @@ export interface SendFileOptions {
   baseUrl: string
   token: string
   to: string
+  clientId?: string
+  signal?: AbortSignal
   contextToken?: string
   /** 明文文件内容。 */
   data: Uint8Array
@@ -45,6 +47,7 @@ export async function sendFile(options: SendFileOptions): Promise<void> {
     to: options.to,
     data: options.data,
     mediaType: 3,
+    signal: options.signal,
     ...(options.cdnBaseUrl === undefined ? {} : { cdnBaseUrl: options.cdnBaseUrl }),
     ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
   })
@@ -55,6 +58,8 @@ export async function sendFile(options: SendFileOptions): Promise<void> {
     label: 'sendmessage(file)',
     token: options.token,
     to: options.to,
+    clientId: options.clientId,
+    signal: options.signal,
     encryptQueryParam: uploaded.downloadParam,
     // 文件用 hex 字符串的 base64：两套参考实现都这么写，别照抄图片那行。
     aesKeyBase64: Buffer.from(uploaded.key.toString('hex'), 'utf8').toString('base64'),

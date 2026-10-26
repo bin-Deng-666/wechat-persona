@@ -32,7 +32,7 @@ describe('buildSystemPrompt', () => {
 
   it('段落顺序固定，且变量已插值', () => {
     const prompt = buildSystemPrompt(card, context)
-    const order = ['# 身份', '# 风格', '# 规则', '# 禁止', '# 此刻', '# 长度', '# 示例']
+    const order = ['# 身份', '# 风格', '# 规则', '# 禁止', '# 此刻', '# 表达长度', '# 示例']
     let cursor = -1
     for (const heading of order) {
       const at = prompt.indexOf(heading)
@@ -40,8 +40,8 @@ describe('buildSystemPrompt', () => {
       cursor = at
     }
     assert.match(prompt, /你是贾维斯，老王的搭子。/)
-    assert.match(prompt, /现在是周一 14:05。你在微信上和「老王」单聊。/)
-    assert.match(prompt, /一般不超过 80 字/)
+    assert.match(prompt, /现在是2026-10-26 周一 14:05。你在微信上和「老王」单聊。/)
+    assert.match(prompt, /通常约 80 字/)
   })
 
   it('没有记忆时不渲染「你记得」', () => {

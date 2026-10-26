@@ -84,12 +84,12 @@ export function buildSystemPrompt(card: PersonaCard, context: PromptContext = {}
     blocks.push(`# 禁止\n${card.prompt.forbidden.map(line => `- ${interpolate(line, vars)}`).join('\n')}`)
   }
 
-  const situation: string[] = [`现在是${vars.weekday ?? ''} ${vars.time ?? ''}。`]
+  const situation: string[] = [`现在是${new Intl.DateTimeFormat('sv-SE', { dateStyle: 'short', ...(context.timeZone ? { timeZone: context.timeZone } : {}) }).format(now)} ${vars.weekday ?? ''} ${vars.time ?? ''}。`]
   if (peer !== undefined) situation.push(`你在微信上和「${peer}」单聊。`)
   if (vars.memory !== '') situation.push(`你记得：${vars.memory}`)
   blocks.push(`# 此刻\n${situation.join('')}`)
 
-  blocks.push(`# 长度\n一般不超过 ${String(card.reply.maxChars)} 字；除非对方明确要求展开，否则别长篇大论。`)
+  blocks.push(`# 表达长度\n日常闲聊倾向简洁，通常约 ${String(card.reply.maxChars)} 字。任务说明、必要解释和用户要求展开时按内容需要完整回答；单条微信消息的切分由通道处理。`)
 
   if (card.examples.length > 0) {
     const lines = card.examples.map(example => `对方：${example.user}\n你：${example.assistant}`)

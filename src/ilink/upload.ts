@@ -29,6 +29,7 @@ export function aesEcbPaddedSize(plaintextSize: number): number {
 export type UploadMediaType = 1 | 2 | 3 | 4
 
 export interface UploadMediaOptions {
+  signal?: AbortSignal
   api: ApiClient
   baseUrl: string
   token: string
@@ -78,6 +79,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<Uploaded
     rawfilemd5: createHash('md5').update(plaintext).digest('hex'),
     filesize: ciphertextSize,
     aeskey: key.toString('hex'),
+    signal: options.signal,
   })
 
   const target = upload.uploadFullUrl !== undefined && upload.uploadFullUrl.trim() !== ''
@@ -90,8 +92,10 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<Uploaded
   const ciphertext = encryptAesEcb(plaintext, key)
   let lastError: unknown
   for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    options.signal?.throwIfAborted()
     try {
       const response = await fetchImpl(target, {
+        signal: options.signal,
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: new Uint8Array(ciphertext),
@@ -107,6 +111,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<Uploaded
       }
       return { key, ciphertextSize, downloadParam }
     } catch (error) {
+      options.signal?.throwIfAborted()
       lastError = error
       if (error instanceof Error && error.message.includes('被拒绝')) throw error
     }

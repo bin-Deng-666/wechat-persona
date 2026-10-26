@@ -40,7 +40,9 @@ function fakeRegistry(options: { existing?: string[]; live?: Map<string, unknown
 describe('sessionIdFor', () => {
   it('前缀固定，且只含安全字符', () => {
     assert.equal(sessionIdFor('wxid_abc-123'), `${SESSION_ID_PREFIX}wxid_abc-123`)
-    assert.equal(sessionIdFor('a/b:c@d'), `${SESSION_ID_PREFIX}a-b-c-d`)
+    assert.match(sessionIdFor('a/b:c@d'), /^channel-persona-a-b-c-d~p[a-f0-9]{32}$/u)
+    assert.notEqual(sessionIdFor('a@b'), sessionIdFor('a.b'))
+    assert.notEqual(sessionIdFor('a@b'), sessionIdFor('a-b'))
   })
 
   it('同一个 peer 永远映射到同一个会话', () => {

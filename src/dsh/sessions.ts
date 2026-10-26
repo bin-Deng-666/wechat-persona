@@ -8,6 +8,7 @@
  * @module wechat-persona/dsh/sessions
  */
 
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
@@ -21,10 +22,10 @@ export const SESSION_ID_PREFIX = 'channel-persona-'
  * @param peerId - 微信用户 id。
  */
 export function sessionIdFor(peerId: string, generation = 0): SessionId {
-  // 会话 id 是路径片段，必须只含安全字符；其余用 `-` 替掉并保证唯一性（peer id 本身唯一）。
   const safe = peerId.replace(/[^A-Za-z0-9_-]/gu, '-')
-  // 代次 0 不加后缀，保持旧会话 id 不变（升级后能接上历史）。
-  return (generation <= 0 ? `${SESSION_ID_PREFIX}${safe}` : `${SESSION_ID_PREFIX}${safe}~g${String(generation)}`) as SessionId
+  // Sanitizing is not injective. Reserve a separate namespace for IDs requiring escaping.
+  const identity = safe === peerId ? safe : `${safe.slice(0, 80)}~p${createHash('sha256').update(peerId).digest('hex').slice(0, 32)}`
+  return (generation <= 0 ? `${SESSION_ID_PREFIX}${identity}` : `${SESSION_ID_PREFIX}${identity}~g${String(generation)}`) as SessionId
 }
 
 /** registry 返回的句柄，只取我们用得到的部分。 */
@@ -35,6 +36,10 @@ export interface AgentHandleLike {
     readonly ctx?: Context
     /** 把一条消息排成下一轮并唤醒循环。 */
     followup(message: never): void
+    /** Active requests receive corrections at the next model step. */
+    steer?(message: never): void
+    whenIdle?(): Promise<void>
+    readonly inbox?: { readonly nextTurn: readonly { id: unknown }[]; readonly nextStep: readonly { id: unknown }[] }
     /** 当前是否在跑一轮，GUI 的停止按钮看的也是它。 */
     readonly status?: 'idle' | 'running'
     /**
@@ -48,7 +53,7 @@ export interface AgentHandleLike {
      * 持久化会话对象；真实 registry 会给，测试里的结构化句柄可能没有。
      * 权限预设只能记在它上面。
      */
-    readonly session?: unknown
+    readonly session?: { deriveMessages?(): readonly { id: unknown }[] } | unknown
     /** 空闲期维护任务：手动压缩用它和正在跑的一轮串行化。 */
     runMaintenance?<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
     /** 这个会话当前的路由选择；压缩摘要沿用同一个 provider/model。 */
@@ -123,7 +128,8 @@ export class PeerSessions {
   async acquire(peerId: string, generation = 0): Promise<AgentHandleLike> {
     const key = `${peerId}#${String(generation)}`
     const existing = this.live.get(key)
-    if (existing !== undefined) return existing
+    if (existing !== undefined && this.options.registry.get(existing.agent.id) !== undefined) return existing
+    this.live.delete(key)
 
     const sessionId = sessionIdFor(peerId, generation)
     const registry = this.options.registry
@@ -195,7 +201,13 @@ export class PeerSessions {
       this.live.delete(key)
     }
     const handle = await this.acquire(peerId, generation)
-    handle.agent.followup(message)
+    // Replayed batches keep their identity. The durable host inbox/history is authoritative.
+    const id = (message as { id?: unknown }).id
+    const session = handle.agent.session as { deriveMessages?(): readonly { id: unknown }[] } | undefined
+    const queued = [...(handle.agent.inbox?.nextTurn ?? []), ...(handle.agent.inbox?.nextStep ?? []), ...(session?.deriveMessages?.() ?? [])]
+    if (id !== undefined && queued.some(item => item.id === id)) return
+    if (handle.agent.status === 'running' && handle.agent.steer) handle.agent.steer(message)
+    else handle.agent.followup(message)
   }
 
   /**

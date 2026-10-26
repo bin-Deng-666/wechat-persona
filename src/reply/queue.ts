@@ -1,247 +1,210 @@
-/**
- * 把模型回答发回微信。
- *
- * 两个决定塑造了这个文件：
- *
- * **回答来自 durable 事件。** `assistant/message` 才是会话日志里落定的东西；
- * 流式的 `assistant-stream` 是进程内的，没人订阅时就丢了，用它拼回复会在重载后缺块。
- *
- * **投递走队列。** 微信没有重放、没有投递回执，一次失败的发送就是用户永远看不到的消息。
- * 队列做有限次重试、保证同一 peer 的顺序、并让一个不可达的 peer 不拖住其他 peer。
- *
- * @module wechat-persona/reply/queue
- */
-
+/** Ordered, cancellable text/image/file delivery with durable per-unit outcomes. */
+import { randomUUID } from 'node:crypto'
 import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
-import { parseStickerTokens } from '../stickers/markers.ts'
+import type { ConversationStore, DeliveryUnit, DeliveryStatus } from '../chat/history.ts'
 
-/**
- * 一条回复「想一下再发」的停顿。
- *
- * 秒回是机器味最重的地方：人不会在 200ms 内打出一段话。时长随长度增长，
- * 但封顶 1.2 秒——再久就变成「卡住了」，比秒回更像故障。
- *
- * @param text - 要发的内容。
- * @param random - 随机源，测试用。
- */
-export function humanThinkingMs(text: string, random: () => number = Math.random): number {
-  const base = 250 + Math.min(text.length, 200) * 8
-  const jitter = 0.8 + random() * 0.4
-  return Math.round(Math.min(1_200, base * jitter))
-}
-
-/** 服务端用来要求「慢一点」的返回码。 */
 export const THROTTLE_CODE = -2
-
-/** 第一次限流退避，毫秒。 */
-const THROTTLE_BASE_MS = 2_000
-
-/** 限流退避上限，毫秒。 */
-const THROTTLE_MAX_MS = 16_000
-
-/**
- * 这个错误是「慢一点」还是「被拒」。
- *
- * 结构化判断而不是 `instanceof`：错误类在协议层，这里只关心它带的码。
- * @param error - 发送被拒时抛出的值。
- */
-export function isThrottled(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === THROTTLE_CODE
-}
-
-/** 发一条回复；失败且可重试时应 reject。 */
-export type ReplySender = (peerId: string, text: string, contextToken: string | undefined) => Promise<void>
-
+export function isThrottled(error: unknown): boolean { return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === THROTTLE_CODE }
+export interface SendContext { clientId: string; signal: AbortSignal }
+export type ReplySender = (peerId: string, text: string, contextToken: string | undefined, context: SendContext) => Promise<void>
+export interface ReplyScope { generation: number; activityId: string; signal?: AbortSignal }
+export interface DeliveryReport { status: 'accepted' | 'partial' | 'failed' | 'unknown' | 'cancelled'; units: DeliveryUnit[] }
 export interface ReplyQueueOptions {
   send: ReplySender
-  /** 表情与文字共用顺序、节流、重试和队列生命周期。 */
-  sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
-  /** 普通失败最多尝试几次，默认 3。 */
+  sendSticker?: (peerId: string, name: string, token: string | undefined, context: SendContext) => Promise<boolean>
+  sendFile?: (peerId: string, path: string, token: string | undefined, context: SendContext) => Promise<void>
+  history?: ConversationStore
   maxAttempts?: number
-  /** 限流额外允许几次，默认 5。 */
   maxThrottleAttempts?: number
-  /** 放弃时回调。 */
   onGiveUp?: (peerId: string, text: string, error: unknown) => void
-  /** 普通重试间隔，毫秒。 */
   retryDelayMs?: number
-  /** 同一 peer 两次发送的最小间隔，毫秒。 */
   minIntervalMs?: number
-  /** 默认发送形态；单条可以覆盖。 */
   plan?: ReplyPlan
-  /**
-   * 每个气泡发出之前的回调。
-   *
-   * 用来重报「对方正在输入」：微信每收到一条消息就把输入状态清掉，
-   * 多气泡之间不重报的话，用户会看到「正在输入」闪一下再消失。
-   */
   onChunk?: (peerId: string, index: number, total: number) => void
-  /** 某个 peer 的队列排空（发完或放弃）时回调；用来收「正在输入」。 */
   onDrain?: (peerId: string) => void
-  /**
-   * 第一条气泡之前的「思考」停顿，毫秒。
-   *
-   * 秒回是机器味最重的地方：人打字需要时间，条越长越久。返回 0 表示不等。
-   */
-  thinkingMs?: (peerId: string, text: string) => number
-  /** 单次发送超过 1 秒时回调（诊断用）。 */
   onSlowSend?: (peerId: string, spentMs: number, chars: number) => void
-  /** 测试注入的 sleep。 */
   sleep?: (ms: number) => Promise<void>
-  /** 测试注入的时钟。 */
   now?: () => number
 }
-
-interface Queued {
+interface Job {
   peerId: string
-  text: string
-  contextToken: string | undefined
-  /** 这一条的发送形态；undefined 用队列默认值。 */
-  plan?: ReplyPlan
-  /** 系统提示/命令回复：不做「思考停顿」，立即发。 */
-  immediate?: boolean
+  units: DeliveryUnit[]
+  controller: AbortController
+  ready: Promise<void>
+  gapMs: number
+  resolve: (report: DeliveryReport) => void
+  unlink: () => void
+}
+function result(units: DeliveryUnit[]): DeliveryReport {
+  const statuses = units.map(unit => unit.status)
+  const status = statuses.every(status => status === 'accepted') ? 'accepted'
+    : statuses.includes('accepted') ? 'partial' : statuses.includes('unknown') ? 'unknown'
+      : statuses.includes('failed') ? 'failed' : 'cancelled'
+  return { status, units: structuredClone(units) }
 }
 
-/**
- * 每个 peer 一条串行队列。
- *
- * 同一 peer 的发送按入队顺序一次一条，慢的回复不会被下一条超车；不同 peer 互不阻塞。
- */
 export class ReplyQueue {
-  private readonly options: ReplyQueueOptions
-  private readonly queues = new Map<string, Queued[]>()
+  private readonly queues = new Map<string, Job[]>()
   private readonly running = new Map<string, Promise<void>>()
+  private readonly active = new Map<string, Job>()
   private readonly lastSentAt = new Map<string, number>()
+  private readonly options: ReplyQueueOptions
+  constructor(options: ReplyQueueOptions) { this.options = options }
 
-  constructor(options: ReplyQueueOptions) {
-    this.options = options
+  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan, options?: { immediate?: boolean; scope?: ReplyScope; groupId?: string }): Promise<DeliveryReport> {
+    const selected = plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
+    const parts: { kind: DeliveryUnit['kind']; value: string }[] = []
+    for (const bubble of planBubbles(text, selected)) {
+      const pattern = /\[表情[:：]([^\]]*)\]/gu
+      let start = 0
+      for (const match of bubble.matchAll(pattern)) {
+        const body = bubble.slice(start, match.index).trim()
+        if (body) parts.push({ kind: 'text', value: body })
+        const name = match[1]?.trim()
+        if (name) parts.push({ kind: 'sticker', value: name })
+        start = match.index + match[0].length
+      }
+      const body = bubble.slice(start).trim()
+      if (body) parts.push({ kind: 'text', value: body })
+    }
+    return this.schedule(peerId, parts, contextToken, selected.gapMs, options?.scope, options?.groupId)
   }
-
-  /**
-   * 入队一条回复。返回的 Promise 在这条回复彻底结束（发出或放弃）后 settle，
-   * 不会因重试而 reject。
-   */
-  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan, options?: { immediate?: boolean }): Promise<void> {
-    const queue = this.queues.get(peerId) ?? []
-    queue.push({
-      peerId,
-      text,
-      contextToken,
-      ...(plan === undefined ? {} : { plan }),
-      ...(options?.immediate === true ? { immediate: true } : {}),
+  enqueueFiles(peerId: string, paths: readonly string[], token?: string, scope?: ReplyScope, groupId?: string): Promise<DeliveryReport> {
+    return this.schedule(peerId, paths.map(value => ({ kind: 'file', value })), token, 0, scope, groupId)
+  }
+  private schedule(peerId: string, parts: { kind: DeliveryUnit['kind']; value: string }[], token: string | undefined, gapMs: number, scope?: ReplyScope, groupId: string = randomUUID()): Promise<DeliveryReport> {
+    const controller = new AbortController()
+    const abort = () => controller.abort(scope?.signal?.reason)
+    if (scope?.signal?.aborted) abort()
+    else scope?.signal?.addEventListener('abort', abort, { once: true })
+    const units = parts.map((part, index): DeliveryUnit => ({
+      id: `${groupId}:${index}`, peerId, groupId, generation: scope?.generation ?? 0,
+      activityId: scope?.activityId ?? 'control', ...part, contextToken: token,
+      status: 'pending', createdAt: (this.options.now ?? Date.now)(),
+    }))
+    return new Promise(resolve => {
+      const ready = (async () => { for (const unit of units) await this.options.history?.saveDelivery(unit) })()
+      void ready.catch(() => {})
+      const job: Job = { peerId, units, controller, ready, gapMs, resolve, unlink: () => scope?.signal?.removeEventListener('abort', abort) }
+      const queue = this.queues.get(peerId) ?? []
+      queue.push(job); this.queues.set(peerId, queue)
+      this.ensureDrain(peerId)
     })
-    this.queues.set(peerId, queue)
-    return this.ensureDrain(peerId)
   }
-
-  /**
-   * 确保这个 peer 有一条在跑的 drain。
-   *
-   * `running` 的删除和 drain 结束之间有一个微任务窗口，正好落在里面入队的消息
-   * 会被 push 进去却没人处理——所以删除后再看一眼队列。
-   */
-  private ensureDrain(peerId: string): Promise<void> {
-    const existing = this.running.get(peerId)
-    if (existing !== undefined) return existing
-    const run = this.drain(peerId).finally(() => {
-      this.running.delete(peerId)
-      if ((this.queues.get(peerId)?.length ?? 0) > 0) void this.ensureDrain(peerId)
-    })
-    this.running.set(peerId, run)
-    return run
+  /** Cancel active and queued units. Already accepted units retain their outcome. */
+  cancel(peerId: string, activityId?: string): boolean {
+    const jobs = [...(this.queues.get(peerId) ?? []), ...(this.active.has(peerId) ? [this.active.get(peerId)!] : [])]
+    let cancelled = false
+    for (const job of jobs) if (activityId === undefined || job.units.some(unit => unit.activityId === activityId)) {
+      if (job.units.some(unit => unit.status === 'pending' || unit.status === 'sending')) { job.controller.abort(); cancelled = true }
+    }
+    return cancelled
   }
-
-  /** 某个 peer 是否还有未完成的工作。 */
-  isBusy(peerId: string): boolean {
-    return this.running.has(peerId) || (this.queues.get(peerId)?.length ?? 0) > 0
-  }
-
-  /** 等待所有 peer 的队列排空。 */
-  async whenIdle(): Promise<void> {
-    while (this.running.size > 0) {
-      await Promise.all([...this.running.values()])
+  isBusy(peerId: string): boolean { return this.running.has(peerId) || (this.queues.get(peerId)?.length ?? 0) > 0 }
+  async whenIdle(): Promise<void> { while (this.running.size) await Promise.all([...this.running.values()]) }
+  /** An interrupted network attempt is ambiguous. Only definitely unattempted units resume. */
+  async recover(): Promise<void> {
+    if (!this.options.history) return
+    for (const peerId of await this.options.history.peers()) {
+      const history = await this.options.history.history(peerId)
+      const interrupted = new Set(history.deliveries.filter(unit => unit.status === 'sending').map(unit => unit.groupId))
+      for (const unit of history.deliveries) {
+        if (unit.status === 'sending') await this.options.history.saveDelivery({ ...unit, status: 'unknown', error: '进程在发送期间退出，投递结果不明' })
+        else if (unit.status === 'pending') {
+          // Do not resurrect an old answer in a new activity. Expose the outcome to the next request.
+          await this.options.history.saveDelivery({ ...unit, status: 'cancelled', error: interrupted.has(unit.groupId) ? '前一条投递结果不明，取消剩余内容' : '重启取消尚未发送的旧回复' })
+        }
+      }
     }
   }
-
+  private ensureDrain(peerId: string): void {
+    if (this.running.has(peerId)) return
+    const work = this.drain(peerId).finally(() => {
+      this.running.delete(peerId)
+      if (this.queues.get(peerId)?.length) this.ensureDrain(peerId)
+    })
+    this.running.set(peerId, work)
+  }
   private async drain(peerId: string): Promise<void> {
     try {
       for (;;) {
-        const queue = this.queues.get(peerId)
-        const next = queue?.shift()
-        if (next === undefined) {
-          this.queues.delete(peerId)
-          return
-        }
-        await this.deliver(next)
+        const job = this.queues.get(peerId)?.shift()
+        if (!job) { this.queues.delete(peerId); return }
+        this.active.set(peerId, job)
+        try { await this.deliver(job) }
+        catch (error) {
+          for (const unit of job.units) if (unit.status === 'pending') { unit.status = 'failed'; unit.error = String(error) }
+          this.options.onGiveUp?.(peerId, '', error)
+        } finally { this.active.delete(peerId); job.unlink(); job.resolve(result(job.units)) }
       }
-    } finally {
-      // 队列空了就收「正在输入」；如果这之间又进来一条，新的一轮 drain 会重新开始上报。
-      this.options.onDrain?.(peerId)
+    } finally { this.options.onDrain?.(peerId) }
+  }
+  private async save(unit: DeliveryUnit, status: DeliveryStatus, error?: string): Promise<void> {
+    unit.status = status
+    if (error) unit.error = error
+    await this.options.history?.saveDelivery(unit)
+  }
+  private async pause(ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted || ms <= 0) return
+    if (this.options.sleep) { await this.options.sleep(ms); return }
+    await new Promise<void>(resolve => {
+      const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve() }
+      const timer = setTimeout(finish, ms)
+      signal.addEventListener('abort', finish, { once: true })
+    })
+  }
+  private async deliver(job: Job): Promise<void> {
+    // Commit the complete group before the first network attempt.
+    await job.ready
+    let stop = false
+    for (const [index, unit] of job.units.entries()) {
+      if (job.controller.signal.aborted || stop) { await this.save(unit, 'cancelled'); continue }
+      if (index) await this.pause(job.gapMs, job.controller.signal)
+      this.options.onChunk?.(job.peerId, index, job.units.length)
+      const sent = await this.send(unit, job.controller.signal)
+      // A missing sticker should not suppress meaningful following text.
+      if (!sent && unit.kind !== 'sticker') stop = true
     }
   }
-
-  private async deliver(item: Queued): Promise<void> {
-    const sleep = this.options.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)) })
-    const plan = item.plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
-    const bubbles = planBubbles(item.text, plan)
-
-    // 命令回复、菜单卡片、失败提示都不该「想一想」：秒回才像在点按钮。
-    const thinking = item.immediate === true ? 0 : (this.options.thinkingMs?.(item.peerId, item.text) ?? 0)
-    if (thinking > 0) await sleep(thinking)
-    for (const [index, chunk] of bubbles.entries()) {
-      // 第二条起先等一个「人打字」的间隔：几条同时出现像刷屏，完全不留白又像卡了。
-      if (index > 0) await sleep(plan.gapMs)
-      this.options.onChunk?.(item.peerId, index, bubbles.length)
-      const { names, text: stripped } = parseStickerTokens(chunk)
-      // 一张失败不影响下一张，也不影响正文：表情是锦上添花。
-      for (const name of names) {
-        if (this.options.sendSticker === undefined) break
-        await this.trySend(item, chunk, async () => await this.options.sendSticker!(item.peerId, name, item.contextToken), sleep)
-      }
-      const body = names.length === 0 ? chunk : stripped
-      if (body === '') continue
-      const sent = await this.trySend(item, body, async () => {
-        await this.options.send(item.peerId, body, item.contextToken)
-        return true
-      }, sleep)
-      if (!sent) return
-    }
-  }
-
-  private async trySend(item: Queued, text: string, send: () => Promise<boolean>, sleep: (ms: number) => Promise<void>): Promise<boolean> {
-    let throttleCount = 0
-    let attempt = 0
+  private async send(unit: DeliveryUnit, signal: AbortSignal): Promise<boolean> {
+    let attempts = 0, throttles = 0
     for (;;) {
-      await this.pace(item.peerId, sleep)
+      const last = this.lastSentAt.get(unit.peerId)
+      if (last !== undefined) await this.pause(Math.max(0, (this.options.minIntervalMs ?? 0) - ((this.options.now ?? Date.now)() - last)), signal)
+      if (signal.aborted) { await this.save(unit, 'cancelled'); return false }
+      await this.save(unit, 'sending')
+      if (signal.aborted) { await this.save(unit, 'cancelled'); return false }
       try {
-        const sendStarted = (this.options.now ?? Date.now)()
-        const sent = await send()
-        if (!sent) return false
-        const spent = (this.options.now ?? Date.now)() - sendStarted
-        if (spent > 1_000) this.options.onSlowSend?.(item.peerId, spent, text.length)
-        this.lastSentAt.set(item.peerId, (this.options.now ?? Date.now)())
+        const started = (this.options.now ?? Date.now)()
+        const context = { clientId: unit.id, signal }
+        if (unit.kind === 'text') await this.options.send(unit.peerId, unit.value, unit.contextToken, context)
+        else if (unit.kind === 'file') {
+          if (!this.options.sendFile) throw Object.assign(new Error('宿主不支持文件发送'), { code: 'unsupported' })
+          await this.options.sendFile(unit.peerId, unit.value, unit.contextToken, context)
+        } else if (!this.options.sendSticker || !(await this.options.sendSticker(unit.peerId, unit.value, unit.contextToken, context))) {
+          await this.save(unit, 'failed', '表情不存在或不可发送'); return false
+        }
+        // An accepted send remains accepted even when cancellation raced its response.
+        await this.save(unit, 'accepted')
+        const spent = (this.options.now ?? Date.now)() - started
+        if (spent > 1000) this.options.onSlowSend?.(unit.peerId, spent, unit.value.length)
+        this.lastSentAt.set(unit.peerId, (this.options.now ?? Date.now)())
         return true
       } catch (error) {
-        if (isThrottled(error) && throttleCount < (this.options.maxThrottleAttempts ?? 5)) {
-          throttleCount += 1
-          await sleep(Math.min(THROTTLE_MAX_MS, THROTTLE_BASE_MS * 2 ** (throttleCount - 1)))
-          continue
+        const failure = error as { code?: unknown; status?: unknown }
+        const rejected = typeof failure?.code === 'number' || ['unsupported', 'ENOENT', 'EACCES'].includes(String(failure?.code)) || (typeof failure?.status === 'number' && failure.status >= 400 && failure.status < 500)
+        if (signal.aborted) { await this.save(unit, rejected ? 'cancelled' : 'unknown', String(error)); return false }
+        if (isThrottled(error) && throttles < (this.options.maxThrottleAttempts ?? 5)) {
+          throttles++; await this.pause(Math.min(16000, 2000 * 2 ** (throttles - 1)), signal); continue
         }
-        attempt += 1
-        if (attempt >= (this.options.maxAttempts ?? 3)) {
-          this.options.onGiveUp?.(item.peerId, text, error)
+        attempts++
+        if ((rejected && !isThrottled(error)) || attempts >= (this.options.maxAttempts ?? 3)) {
+          await this.save(unit, rejected ? 'failed' : 'unknown', String(error))
+          this.options.onGiveUp?.(unit.peerId, unit.value, error)
           return false
         }
-        await sleep(this.options.retryDelayMs ?? 1_000)
+        await this.pause(this.options.retryDelayMs ?? 1000, signal)
       }
     }
-  }
-
-  private async pace(peerId: string, sleep: (ms: number) => Promise<void>): Promise<void> {
-    const minInterval = this.options.minIntervalMs ?? 0
-    if (minInterval <= 0) return
-    const last = this.lastSentAt.get(peerId)
-    if (last === undefined) return
-    const elapsed = (this.options.now ?? Date.now)() - last
-    if (elapsed < minInterval) await sleep(minInterval - elapsed)
   }
 }

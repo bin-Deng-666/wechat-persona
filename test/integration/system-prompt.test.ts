@@ -8,7 +8,8 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { PeerSystemPrompt, PERSONA_SECTION } from '../../src/dsh/system-prompt.ts'
-import { PeerMemory } from '../../src/chat/memory.ts'
+import { PeerMemory } from '../../src/memory/store.ts'
+import { preference } from '../helpers/memory.ts'
 import { ChatSettingsStore } from '../../src/chat/settings.ts'
 import { PersonaStore } from '../../src/persona/store.ts'
 import { StickerLibrary } from '../../src/stickers/library.ts'
@@ -19,7 +20,7 @@ async function fixture(t: TestContext) {
   const ctx = new Context()
   new SystemPrompt(ctx, { personaSuffix: '宿主工具执行规则' })
   const settings = new ChatSettingsStore(join(root, 'chats'))
-  const memory = new PeerMemory(join(root, 'memories.json'))
+  const memory = new PeerMemory(join(root, 'memory'))
   const stickers = new StickerLibrary(join(root, 'stickers'))
   const prompts = new PeerSystemPrompt({ personas: new PersonaStore(join(root, 'personas')), settings,
     defaultPersona: () => 'alpha', memory, stickers, now: () => new Date('2026-10-26T14:05:00+08:00'), timeZone: 'Asia/Shanghai' })
@@ -70,10 +71,11 @@ describe('PeerSystemPrompt', () => {
     assert.match(await agent.render(), /你是甲/)
     await f.settings.save('u1', { enabled: true, personaId: 'beta', maxChars: 200 })
     await f.card('beta', '新乙', '你是{{name}}，保留字面 {{not_a_harness_variable}}。')
-    await f.memory.remember('u1', ['对方喜欢散步'])
+    await preference(f.memory, 'u1', '对方喜欢散步')
     const changed = await agent.render()
     assert.match(changed, /你是新乙/)
-    assert.match(changed, /200 字/)
+    assert.match(changed, /通常约 120 字/)
+    assert.doesNotMatch(changed, /通常约 200 字/)
     assert.match(changed, /对方喜欢散步/)
     assert.match(changed, /\{\{not_a_harness_variable\}\}/)
     await f.memory.clear('u1')
@@ -100,7 +102,7 @@ describe('PeerSystemPrompt', () => {
 
   it('新代次和恢复后的新 agent 都获得完整系统人格，无首轮状态依赖', async t => {
     const f = await fixture(t)
-    await f.memory.remember('u1', ['对方喜欢茶'])
+    await preference(f.memory, 'u1', '对方喜欢茶')
     for (let index = 0; index < 3; index += 1) {
       const agent = f.agent('u1')
       assert.match(await agent.render(), /你是甲/)

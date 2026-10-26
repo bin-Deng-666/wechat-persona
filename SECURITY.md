@@ -46,8 +46,9 @@ agent. That is the feature. Understand what it implies before deploying it.
 |---|---|---|
 | Bot token and account id | `~/.dsh/wechat-persona/account.json` | Written with mode `0600`. Deleting it logs the bot out. |
 | Panel access key | Generated per process, printed in logs | Grants the same actions as the panel routes. Treat log files as sensitive. |
-| Chat transcripts | DSH session storage | Contains message content and tool output. |
-| Sticker assets and memories | `~/.dsh/wechat-persona/` | Contains media received in chat. |
+| Chat transcripts | DSH session storage and `~/.dsh/wechat-persona/conversations/` | Contains original input, tool output, reply tokens, task snapshots and delivery status. Local conversation files use mode `0600`. |
+| Personal memories | `~/.dsh/wechat-persona/memory/` | Per-contact facts, original quotations, versions and deletion suppression keys. Legacy `memories.json` is retained as unverified data. |
+| Sticker assets | `~/.dsh/wechat-persona/stickers/` | Contains media received in chat. |
 | Diagnostic logs | `~/.dsh/wechat-persona/logs/` | May contain peer ids, tool names and error text. |
 
 ### The default permission preset
