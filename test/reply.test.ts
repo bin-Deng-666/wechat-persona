@@ -171,3 +171,17 @@ describe('humanThinkingMs', () => {
     assert.ok(humanThinkingMs('', () => 0) > 0)
   })
 })
+
+describe('思考停顿', () => {
+  it('系统提示不等待，模型回复才等待', async () => {
+    const waited: string[] = []
+    const queue = new ReplyQueue({
+      send: async () => {},
+      sleep: async () => {},
+      thinkingMs: (_peer, text) => { waited.push(text); return 0 },
+    })
+    await queue.enqueue('p1', '普通回复')
+    await queue.enqueue('p1', '命令回复', undefined, undefined, { immediate: true })
+    assert.deepEqual(waited, ['普通回复'])
+  })
+})

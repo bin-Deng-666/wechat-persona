@@ -511,7 +511,8 @@ export class Coordinator {
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。
       const approvals = new ApprovalBridge({
-        ask: async (peerId, text) => { await replies.enqueue(peerId, text, channel.contextTokenFor(peerId)) },
+        // 审批提示要立刻出现：用户正等着决定，不该先「想」两秒。
+        ask: async (peerId, text) => { await replies.enqueue(peerId, text, channel.contextTokenFor(peerId), undefined, { immediate: true }) },
         report: this.report,
       })
       this.approvals = approvals

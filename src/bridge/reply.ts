@@ -130,6 +130,8 @@ interface Queued {
   contextToken: string | undefined
   /** 这一条的发送形态；undefined 用队列默认值。 */
   plan?: ReplyPlan
+  /** 系统提示/命令回复：不做「思考停顿」，立即发。 */
+  immediate?: boolean
 }
 
 /**
@@ -151,9 +153,15 @@ export class ReplyQueue {
    * 入队一条回复。返回的 Promise 在这条回复彻底结束（发出或放弃）后 settle，
    * 不会因重试而 reject。
    */
-  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan): Promise<void> {
+  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan, options?: { immediate?: boolean }): Promise<void> {
     const queue = this.queues.get(peerId) ?? []
-    queue.push({ peerId, text, contextToken, ...(plan === undefined ? {} : { plan }) })
+    queue.push({
+      peerId,
+      text,
+      contextToken,
+      ...(plan === undefined ? {} : { plan }),
+      ...(options?.immediate === true ? { immediate: true } : {}),
+    })
     this.queues.set(peerId, queue)
     return this.ensureDrain(peerId)
   }
@@ -213,7 +221,8 @@ export class ReplyQueue {
     let throttleCount = 0
     let attempt = 0
 
-    const thinking = this.options.thinkingMs?.(item.peerId, item.text) ?? 0
+    // 命令回复、菜单卡片、失败提示都不该「想一想」：秒回才像在点按钮。
+    const thinking = item.immediate === true ? 0 : (this.options.thinkingMs?.(item.peerId, item.text) ?? 0)
     if (thinking > 0) await sleep(thinking)
     for (const [index, chunk] of bubbles.entries()) {
       // 第二条起先等一个「人打字」的间隔：几条同时出现像刷屏，完全不留白又像卡了。

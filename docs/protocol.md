@@ -59,6 +59,18 @@ GET  /ilink/bot/get_qrcode_status?qrcode=<值>[&verify_code=<值>]
 `MessageItem.type`：`1` text / `2` image / `3` voice / `4` file / `5` video /
 `11` tool_call_start / `12` tool_call_result。
 
+**没有的东西**（别照着「微信有的都能发」去设计）：
+
+| 想做 | 结论 |
+|---|---|
+| 发定位 | 没有位置消息项，只能发「名字 + 地图链接」文本 |
+| 发语音 | 有 `type: 3`，但两套参考实现都只收不发；编码（silk/amr）与时长字段没有样本，未验证 |
+| 按钮卡片 | 没有模板消息/按钮/菜单，机器人只能发文本与媒体 |
+| 引用回复 | 入站带 `quote.message_id`，出站没有对应字段 |
+
+文件发送的两套编号别弄混：`MessageItem.type = 4`，而 `getuploadurl` 的 `media_type = 3`；
+并且文件 `aes_key` 是「hex 字符串」的 base64，图片才是 16 字节原样的 base64。
+
 ### 发文本的必填结构
 
 缺字段的表现是 **HTTP 200 但不投递**（静默丢消息），所以逐字段核对：

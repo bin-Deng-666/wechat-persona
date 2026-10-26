@@ -463,7 +463,7 @@ export class Channel {
   /** 一条纯文本回复（走正常队列，限流/分条都复用）。 */
   private async answer(peerId: string, text: string, contextToken: string | undefined): Promise<void> {
     const plan = this.plans.get(peerId) ?? DEFAULT_REPLY_PLAN
-    await this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' })
+    await this.options.replies.enqueue(peerId, text, contextToken, { ...plan, splitMode: 'none' }, { immediate: true })
   }
 
   /** 读这个聊天的设置；没有设置仓库时用默认值。 */
@@ -585,7 +585,7 @@ export class Channel {
   /** 发一条系统提示（不分条、不占用回复形态）。 */
   private notice(peerId: string, text: string): void {
     const plan = this.plans.get(peerId) ?? DEFAULT_REPLY_PLAN
-    void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId), { ...plan, splitMode: 'none' })
+    void this.options.replies.enqueue(peerId, text, this.contextTokens.get(peerId), { ...plan, splitMode: 'none' }, { immediate: true })
   }
 
   /**
@@ -632,7 +632,7 @@ export class Channel {
    */
   private async runCommand(peerId: string, command: { name: string; args: string[] }, generation: number, contextToken: string | undefined): Promise<void> {
     const reply = (text: string): void => {
-      void this.options.replies.enqueue(peerId, text, contextToken, this.plans.get(peerId))
+      void this.options.replies.enqueue(peerId, text, contextToken, this.plans.get(peerId), { immediate: true })
     }
 
     switch (command.name) {
