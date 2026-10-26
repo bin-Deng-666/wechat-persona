@@ -15,6 +15,12 @@ Versions before `0.2.0` are development builds and were never published.
   等凭据。
 - Conversation evaluation accepts `--persona` and `--cases` for actual cards.
 
+### Fixed
+
+- 出站媒体的 `aes_key` 统一为「先写 32 位 hex 字符串、再对该字符串做 base64」。图片此前误用
+  了 16 字节原样的 base64，收件人解不开密钥，微信里表现为「图片已过期」。图片、文件、视频
+  现在共用同一种编码。
+
 ## [0.3.0-dev.0] - 2026-10-26
 
 ### Changed

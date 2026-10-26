@@ -53,6 +53,9 @@ describe('sendImage', () => {
     assert.equal(sent[0]?.['encryptQueryParam'], 'download-param')
     assert.equal(sent[0]?.['ciphertextSize'], aesEcbPaddedSize('image-bytes'.length))
     assert.ok(typeof sent[0]?.['aesKeyBase64'] === 'string')
+    // 图片的 aes_key 必须是「hex 字符串再 base64」；对 16 字节直接 base64 会让收件人解不开。
+    const decoded = Buffer.from(sent[0]?.['aesKeyBase64'] as string, 'base64').toString('ascii')
+    assert.match(decoded, /^[0-9a-f]{32}$/)
   })
 
   it('优先用 upload_full_url', async () => {

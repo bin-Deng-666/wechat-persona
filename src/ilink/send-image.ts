@@ -59,8 +59,7 @@ export async function sendImage(options: SendImageOptions): Promise<void> {
     clientId: options.clientId,
     signal: options.signal,
     encryptQueryParam: uploaded.downloadParam,
-    // 图片的 key 用「16 字节原样」的 base64（文件是 hex 字符串的 base64，两者不同）。
-    aesKeyBase64: uploaded.key.toString('base64'),
+    aesKeyBase64: uploaded.aesKeyBase64,
     ciphertextSize: uploaded.ciphertextSize,
     ...(options.contextToken === undefined ? {} : { contextToken: options.contextToken }),
   })

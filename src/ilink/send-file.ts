@@ -7,7 +7,7 @@
  * 协议细节（来自 dsh-channel-wechat 与腾讯官方 @tencent-weixin/openclaw-weixin 两套实现）：
  * - 消息项 `type: 4`（file），但 `getuploadurl` 的 `media_type: 3`
  * - `file_item.len` 是**明文**字节数的十进制字符串
- * - `aes_key` 是「hex 字符串」的 base64，不是 16 字节原样的 base64（图片才是后者）
+ * - `aes_key` 是「先写 hex 字符串、再 base64」，图片与文件同一种写法
  *
  * @module wechat-persona/ilink/send-file
  */
@@ -61,8 +61,8 @@ export async function sendFile(options: SendFileOptions): Promise<void> {
     clientId: options.clientId,
     signal: options.signal,
     encryptQueryParam: uploaded.downloadParam,
-    // 文件用 hex 字符串的 base64：两套参考实现都这么写，别照抄图片那行。
-    aesKeyBase64: Buffer.from(uploaded.key.toString('hex'), 'utf8').toString('base64'),
+    // 统一用上传阶段算好的规范编码；图片、文件一致。
+    aesKeyBase64: uploaded.aesKeyBase64,
     fileName: sanitizeName(options.fileName),
     plaintextSize: options.data.length,
     ...(options.contextToken === undefined ? {} : { contextToken: options.contextToken }),

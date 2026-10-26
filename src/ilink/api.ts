@@ -156,10 +156,10 @@ export interface SendFileParams extends RequestOptions {
   /** CDN 返回的下载参数。 */
   encryptQueryParam: string
   /**
-   * AES key 的 base64。
+   * 出站 `media.aes_key`：先把 16 字节 key 写成 32 位 hex 字符串，再对**该字符串**做 base64。
    *
-   * 文件与图片的拼法不同：图片是「16 字节原样」的 base64，文件参考实现发的是
-   * 「32 位 hex 字符串」的 base64。解码端两种都认，但发送端各写各的，别互换。
+   * 图片、文件、视频统一这一种写法（腾讯 openclaw-weixin 与 dsh-channel-wechat 一致）。
+   * 直接对 16 字节做 base64 会让收件人解不开密钥，微信侧表现为「图片已过期」。
    */
   aesKeyBase64: string
   /** 接收方看到的文件名。 */
@@ -378,7 +378,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         item_list: [{
           type: 2,
           image_item: {
-            // 图片的 key 用 base64 原样带上；`mid_size` 是密文长度。
+            // aes_key 已在上传阶段按规范编码好；mid_size 是密文长度。
             media: {
               encrypt_query_param: params.encryptQueryParam,
               aes_key: params.aesKeyBase64,

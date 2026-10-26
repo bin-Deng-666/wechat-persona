@@ -46,10 +46,24 @@ export interface UploadMediaOptions {
 export interface UploadedMedia {
   /** 本次使用的 AES key（16 字节）。 */
   key: Buffer
+  /** 出站 `media.aes_key` 字段，已按协议规范编码好，发送端直接用。 */
+  aesKeyBase64: string
   /** 密文长度，发送时服务端会核对。 */
   ciphertextSize: number
   /** 上传后拿到的下载参数，放进 media.encrypt_query_param。 */
   downloadParam: string
+}
+
+/**
+ * 出站 `media.aes_key` 的规范写法：先把 16 字节 key 写成 hex 字符串，再对**这个字符串**做 base64。
+ *
+ * 两套参考实现（腾讯 openclaw-weixin 与 dsh-channel-wechat）都这么做，图片/文件/视频一致。
+ * 直接对 16 字节做 base64 会让收件人解不开密钥，微信侧表现为“图片已过期”。
+ *
+ * @param key - 16 字节 AES key。
+ */
+export function encodeAesKeyBase64(key: Uint8Array): string {
+  return Buffer.from(Buffer.from(key).toString('hex'), 'utf8').toString('base64')
 }
 
 /**
@@ -109,7 +123,7 @@ export async function uploadMedia(options: UploadMediaOptions): Promise<Uploaded
       if (downloadParam === null || downloadParam === '') {
         throw new Error('CDN 上传返回 200 但没有 x-encrypted-param 头，内容取不到')
       }
-      return { key, ciphertextSize, downloadParam }
+      return { key, aesKeyBase64: encodeAesKeyBase64(key), ciphertextSize, downloadParam }
     } catch (error) {
       options.signal?.throwIfAborted()
       lastError = error

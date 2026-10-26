@@ -68,8 +68,11 @@ GET  /ilink/bot/get_qrcode_status?qrcode=<值>[&verify_code=<值>]
 | 按钮卡片 | 没有模板消息/按钮/菜单，机器人只能发文本与媒体 |
 | 引用回复 | 入站带 `quote.message_id`，出站没有对应字段 |
 
-文件发送的两套编号别弄混：`MessageItem.type = 4`，而 `getuploadurl` 的 `media_type = 3`；
-并且文件 `aes_key` 是「hex 字符串」的 base64，图片才是 16 字节原样的 base64。
+文件发送的两套编号别弄混：`MessageItem.type = 4`，而 `getuploadurl` 的 `media_type = 3`。
+
+出站 `media.aes_key`（图片、文件、视频都一样）是「先把 16 字节 key 写成 32 位 hex 字符串、
+再对该字符串做 base64」。直接对 16 字节做 base64，收件人解不开密钥，往微信里表现为
+**「图片已过期」**。入站两种编码都见过，解码端要都认（参考 `parseAesKey`）。
 
 ### 发文本的必填结构
 

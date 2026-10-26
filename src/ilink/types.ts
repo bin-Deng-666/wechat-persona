@@ -30,7 +30,7 @@ export const MessageItemType = {
 export interface MediaRef {
   /** 下载参数。 */
   encrypt_query_param?: string
-  /** AES key：base64，或 32 位 hex。 */
+  /** AES key：出站是「32 位 hex 字符串的 base64」；入站两种编码都见到过，解码端要都认。 */
   aes_key?: string
   /** 打包方式：0 只加密 file id，1 连缩略图一起。 */
   encrypt_type?: number
