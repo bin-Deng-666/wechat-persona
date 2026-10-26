@@ -20,6 +20,7 @@ import { extractMemoryMarkers, type PeerMemory } from '../chat/memory.ts'
 import { expandLocationTokens } from '../text/location.ts'
 import { ChatControls } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
+import type { CompactOutcome } from '../dsh/compaction.ts'
 import type { ReplyQueue } from '../reply/queue.ts'
 import { extractAssistantText } from '../dsh/events.ts'
 import { PeerSessions, sessionIdFor } from '../dsh/sessions.ts'
@@ -68,6 +69,8 @@ export interface ChannelOptions {
   settings?: ChatSettingsStore
   /** 每个聊天的对话代次（/new 用）；缺失表示不支持开新对话。 */
   generations?: PeerGenerations
+  /** 压缩当前对话；缺失表示这个宿主没有压缩能力。 */
+  compact?: (peerId: string, generation: number) => Promise<CompactOutcome>
   /** 当前权限档位，仅用于 /status 展示。 */
   permissionLabel?: string
   /** 输入状态上报；缺失表示不上报（headless 也能跑）。 */
@@ -180,6 +183,7 @@ export class Channel {
       planFor: peerId => this.plans.get(peerId),
       setPlan: (peerId, plan) => { this.plans.set(peerId, plan) },
       contextTokenFor: peerId => this.contextTokens.get(peerId),
+      compactConversation: options.compact,
       lastSeen: peerId => this.activity.get(peerId),
       turnsFor: peerId => this.turnCounts.get(peerId) ?? 0,
       cancelTurn: async (peerId, generation) => {

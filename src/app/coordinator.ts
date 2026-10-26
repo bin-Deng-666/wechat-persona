@@ -29,6 +29,7 @@ import { PeerMemory } from '../chat/memory.ts'
 import { PeerSystemPrompt } from '../dsh/system-prompt.ts'
 import { humanThinkingMs, ReplyQueue } from '../reply/queue.ts'
 import { createMediaPreparer, type AttachmentStoreLike, type PreparedMedia } from '../dsh/attachments.ts'
+import { compactPeer, type CompactionEngineLike } from '../dsh/compaction.ts'
 import type { MessageItem } from '../ilink/types.ts'
 import { PeerSessions, SESSION_ID_PREFIX, type AgentHandleLike, type AgentRegistryLike } from '../dsh/sessions.ts'
 import { PeerGenerations } from '../chat/generations.ts'
@@ -478,6 +479,14 @@ export class Coordinator {
           this.login.markExpired()
         },
         prepareMedia: this.mediaPreparer(),
+        // 压缩由宿主提供；没有这个服务时命令会回一句「这个宿主没有提供压缩能力」。
+        compact: async (peerId, generation) => await compactPeer({
+          engine: this.ctx.get('compaction') as CompactionEngineLike | undefined,
+          agentAt: async (id, gen) => await sessions.agentAt(id, gen),
+          peerId,
+          generation,
+          report: this.report,
+        }),
       })
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。

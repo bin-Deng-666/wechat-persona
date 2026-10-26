@@ -39,6 +39,10 @@ Versions before `0.2.0` are development builds and were never published.
   scenes; screenshots, photos and documents can be explicitly ignored.
 - Memory persistence through the `[记住: …]` marker, readable and clearable from
   the settings card.
+- 压缩 command: forwards a manual session compaction to the host, replacing old
+  history with one summary while keeping the original log. It reports the
+  shadowed item and token counts, and answers explicitly when the agent is busy,
+  the history is empty, or the host has no compaction service.
 - Multi-frame GIF preview bounded by canvas, frame count and total decode size.
 - Open source project files: CI workflow, issue and PR templates, Dependabot,
   contributing, security policy, code of conduct and this changelog.

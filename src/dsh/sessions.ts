@@ -49,6 +49,10 @@ export interface AgentHandleLike {
      * 权限预设只能记在它上面。
      */
     readonly session?: unknown
+    /** 空闲期维护任务：手动压缩用它和正在跑的一轮串行化。 */
+    runMaintenance?<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>
+    /** 这个会话当前的路由选择；压缩摘要沿用同一个 provider/model。 */
+    readonly options?: { readonly provider?: string; readonly model?: string }
   }
   /** 停循环、反注册、释放写租约。 */
   dispose(): Promise<void>
@@ -166,6 +170,15 @@ export class PeerSessions {
     this.live.set(key, handle)
     this.options.onHandle?.(handle, peerId)
     return handle
+  }
+
+  /**
+   * 取某个 peer 当前会话的 agent；没有就建/恢复一个。
+   *
+   * 给「压缩」这类要直接操作会话的能力用：它需要 agent 本体，而不只是投递入口。
+   */
+  async agentAt(peerId: string, generation = 0): Promise<AgentHandleLike> {
+    return await this.acquire(peerId, generation)
   }
 
   /**

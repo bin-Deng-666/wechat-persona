@@ -10,6 +10,9 @@
  * @module wechat-persona/wechat/commands
  */
 
+// 只借类型：压缩结论由 dsh 适配层产出，文案在这里。
+import type { CompactOutcome } from '../dsh/compaction.ts'
+
 export interface ParsedCommand {
   /** 不带斜杠的命令名，已转小写。 */
   name: string
@@ -21,6 +24,7 @@ export interface ParsedCommand {
 export const COMMANDS: readonly { name: string; usage: string; description: string }[] = [
   { name: 'help', usage: '帮助', description: '列出这些命令' },
   { name: 'new', usage: '新对话', description: '开一段新对话（旧记录保留，不再带上下文）' },
+  { name: 'compact', usage: '压缩', description: '把当前对话的旧历史压成摘要，腾出上下文' },
   { name: 'status', usage: '状态', description: '当前人格、会话代次、上下文轮数' },
   { name: 'persona', usage: '人格 [id]', description: '查看或切换这个聊天的人格' },
   { name: 'style', usage: '分条 [字数|按句|按段|不切|恢复]', description: '看或改回答的分条方式' },
@@ -30,7 +34,7 @@ export const COMMANDS: readonly { name: string; usage: string; description: stri
 ]
 
 const CHINESE_COMMANDS: Record<string, string> = {
-  '菜单': 'menu', '设置': 'menu', '帮助': 'help', '新对话': 'new',
+  '菜单': 'menu', '设置': 'menu', '帮助': 'help', '新对话': 'new', '压缩': 'compact', '压缩对话': 'compact',
   '状态': 'status', '人格': 'persona', '分条': 'style', '停止': 'stop', '表情': '表情',
 }
 const STYLE_ARGUMENTS: Record<string, string> = {
@@ -119,6 +123,27 @@ export function formatPersona(current: string, choices: readonly PersonaChoice[]
 /** `/new` 的回复。 */
 export function formatNewChat(generation: number): string {
   return `已开新对话（第 ${String(generation + 1)} 段）。之前的内容还在记录里，但这轮开始不再带进上下文。`
+}
+
+/**
+ * 「压缩」的回复。
+ * @param outcome - 压缩结论。
+ */
+export function formatCompact(outcome: CompactOutcome): string {
+  switch (outcome.kind) {
+    case 'done':
+      return `已压缩 ${String(outcome.shadowed)} 条历史（约 ${String(outcome.tokens)} tokens）。旧记录还留在会话里，只是不再进入上下文。`
+    case 'nothing':
+      return '这段对话还没有可压缩的历史。'
+    case 'busy':
+      return '现在有一轮正在跑，等它跑完再压缩。'
+    case 'cancelled':
+      return '压缩被取消了。'
+    case 'unavailable':
+      return '这个宿主没有提供压缩能力。'
+    case 'failed':
+      return `压缩没成功：${outcome.message}`
+  }
 }
 
 /**

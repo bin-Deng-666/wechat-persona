@@ -8,7 +8,8 @@ import type { PeerMemory } from '../chat/memory.ts'
 import type { StickerLibrary } from '../stickers/library.ts'
 import { normalizeStickerName } from '../stickers/markers.ts'
 import { MENU_TTL_MS, parseChoice, renderMenu, resolveChoice, type MenuPanel, type MenuView } from './menu.ts'
-import { formatAgo, formatHelp, formatNewChat, formatPersona, formatStatus, formatStyle, formatUnknown } from './commands.ts'
+import { formatAgo, formatCompact, formatHelp, formatNewChat, formatPersona, formatStatus, formatStyle, formatUnknown } from './commands.ts'
+import type { CompactOutcome } from '../dsh/compaction.ts'
 
 export interface ChatControlsOptions {
   personas: PersonaStore
@@ -29,6 +30,8 @@ export interface ChatControlsOptions {
   lastSeen: (peerId: string) => number | undefined
   turnsFor: (peerId: string) => number
   cancelTurn: (peerId: string, generation: number) => Promise<boolean>
+  /** 压缩当前对话；缺失表示这个宿主没有压缩能力。 */
+  compactConversation?: (peerId: string, generation: number) => Promise<CompactOutcome>
 }
 
 export class ChatControls {
@@ -227,6 +230,15 @@ export class ChatControls {
         const next = await this.options.generations.bump(peerId)
         reply(formatNewChat(next))
         this.options.report?.('开了新对话', { peerId, generation: next })
+        return
+      }
+
+      case 'compact': {
+        // 压缩要和正在跑的一轮串行化，宿主空闲时才会真的执行；结论必须回一句。
+        const outcome = this.options.compactConversation === undefined
+          ? { kind: 'unavailable' as const }
+          : await this.options.compactConversation(peerId, generation)
+        reply(formatCompact(outcome))
         return
       }
 
