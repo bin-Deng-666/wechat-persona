@@ -768,8 +768,9 @@ describe('设置卡片', () => {
     await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '4' } }] }))
     assert.equal(saved.length, 1)
     assert.equal(saved[0]?.['proactive'], true)
-    // 点完自动回到根卡片，能看到新状态。
-    assert.match(sent[sent.length - 1] ?? '', /4 {2}主动 · 开/)
+    // 只回一行确认，不再甩一张新卡片（微信里卡片不能就地更新，只会越堆越多）。
+    assert.equal(sent.length, 2)
+    assert.match(sent[sent.length - 1] ?? '', /主动搭话：开/)
   })
 
   it('非数字消息会收起卡片并照常进模型', async () => {
@@ -793,9 +794,9 @@ describe('设置卡片', () => {
     await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
     await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '1' } }] }))
     assert.match(sent[sent.length - 1] ?? '', /人格/)
-    // 这里的人格目录是空的：选一个不存在的序号只是回到根卡片，不能崩。
+    // 这里的人格目录是空的：选一个不存在的序号只是再发一次面板，不能崩。
     await channel.handle(userMessage({ message_id: 'm3', item_list: [{ type: 1, text_item: { text: '1' } }] }))
-    assert.match(sent[sent.length - 1] ?? '', /设置/)
+    assert.match(sent[sent.length - 1] ?? '', /人格/)
     assert.equal(saved.length, 0)
   })
 })

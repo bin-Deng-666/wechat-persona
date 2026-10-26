@@ -389,10 +389,11 @@ export class Channel {
         if (settings === undefined) break
         const next = { ...current, proactive: !current.proactive }
         await settings.save(peerId, next)
-        if (next.proactive && !card.proactive.enabled) {
-          await this.answer(peerId, `这个聊天打开了主动，但人格卡「${card.name}」的 proactive.enabled 还是 false，所以仍然不会开口。`, contextToken)
-        }
-        break
+        const hint = next.proactive && !card.proactive.enabled
+          ? `（但人格卡「${card.name}」没开主动，仍然不会开口）`
+          : ''
+        await this.answer(peerId, `主动搭话：${next.proactive ? '开' : '关'}${hint}`, contextToken)
+        return
       }
       case 'new-chat': {
         if (this.options.generations === undefined) {
@@ -401,7 +402,8 @@ export class Channel {
         }
         await this.options.generations.bump(peerId)
         this.warmed.delete(peerId)
-        break
+        await this.answer(peerId, '开了新对话：之前的内容还在记录里，但这轮开始不再带进上下文。', contextToken)
+        return
       }
       case 'sticker-library': {
         // 只是展示：表情的发送仍由模型在回复里写 [表情:名字] 决定。
@@ -412,7 +414,7 @@ export class Channel {
       case 'clear-memory': {
         await this.options.memory?.clear(peerId)
         await this.answer(peerId, '记忆清空了。', contextToken)
-        break
+        return
       }
       case 'split-sentence':
       case 'split-paragraph':
@@ -423,21 +425,24 @@ export class Channel {
         const next = { ...current, split }
         await settings.save(peerId, next)
         this.plans.set(peerId, resolvePlan(card, next))
-        break
+        await this.answer(peerId, `分条：按${split === 'sentence' ? '句子' : split === 'none' ? '不切' : '段落'}。`, contextToken)
+        return
       }
       case 'max-chars-200': {
         if (settings === undefined) break
         const next = { ...current, maxChars: 200 }
         await settings.save(peerId, next)
         this.plans.set(peerId, resolvePlan(card, next))
-        break
+        await this.answer(peerId, '每条最多 200 字。', contextToken)
+        return
       }
       case 'style-reset': {
         if (settings === undefined) break
         const next = { ...current, maxChars: undefined, split: undefined }
         await settings.save(peerId, next)
         this.plans.set(peerId, resolvePlan(card, next))
-        break
+        await this.answer(peerId, '已恢复人格卡的分条方式。', contextToken)
+        return
       }
       case 'model-default': {
         // 目前只能跟随桌面端：DSH 没有给插件「换某个会话的模型」的口子。
@@ -452,11 +457,14 @@ export class Channel {
           if (picked !== undefined) {
             await settings.save(peerId, { ...current, personaId: picked.card.id })
             this.warmed.delete(peerId)
+            await this.answer(peerId, `已切到「${picked.card.name}」，下一轮生效。`, contextToken)
+            return
           }
         }
       }
     }
-    await this.openMenu(peerId, 'root', contextToken)
+    // 走到这里说明没执行任何动作：把当前面板再发一次，让用户重选。
+    await this.openMenu(peerId, panel, contextToken)
   }
 
   /** 组装卡片展示所需的当前状态。 */
