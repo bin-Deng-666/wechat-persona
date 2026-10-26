@@ -6,9 +6,8 @@
 - **协议层**：腾讯 2026 年官方开放的 iLink Bot 通道（`ilinkai.weixin.qq.com`），
   按公开协议文档实现，不是 Hook、不是协议破解。
 - **产品层**：人格卡（prompt / 温度 / 示例对话）、每个聊天独立上下文与设置、
-  图片与表情理解及发送、主动搭话。
-- **运行形态**：DSH 插件，跑在 Harness 进程内，复用 DSH 的会话、模型与权限，
-  GUI 里有配置页。
+  微信内命令（`/new` `/status` `/persona`）、图片与表情、主动搭话。
+- **运行形态**：DSH 插件，跑在 Harness 进程内，复用 DSH 的会话、模型、工具与权限。
 
 > 名字是占位，随时可改（`package.json` 的 `name` + profile patch 的 `id`）。
 
@@ -27,16 +26,22 @@
 
 ```text
 wechat-persona/
-├── docs/                 设计、协议、ADR、路线图
-├── src/
-│   ├── index.ts          插件入口（cordis apply）
-│   ├── config.ts         配置 schema（schemastery）
-│   ├── ilink/            iLink 协议：登录、长轮询、发消息、媒体、加密
-│   ├── bridge/           DSH 会话桥接：入站注入、出站回发
-│   ├── persona/          人格引擎：卡片、prompt 组装、per-chat 设置、记忆
-│   └── client/           浏览器端配置页
-├── test/                 纯逻辑单测（node --test）
-└── scripts/              本地开发脚本
+├── src/                        插件源码（构建产物在 lib/，不入库）
+│   ├── index.ts                入口：Coordinator（登录态、通道启停、面板、命令接线）
+│   ├── config.ts               配置 schema（全部 volatile，GUI 可编辑）
+│   ├── credentials.ts          凭据落盘（0600、原子写）
+│   ├── ilink/                  iLink 协议：api / 登录状态机 / 媒体下载 / 发图 / 类型
+│   ├── bridge/                 会话桥接：peer⇄会话、回复队列、文本切分、媒体降级、
+│   │                           人设注入、准入、对话代次
+│   ├── persona/                人格卡解析与加载、prompt 组装、每聊天设置、表情库
+│   └── channel/                运行时（轮询/命令/主动搭话）、登录会话、面板路由、
+│                               输入状态、文件日志、二维码
+├── test/                       单测（node --test，237 项，行覆盖 91%）
+├── scripts/                    一次性/运维脚本，见 scripts/README.md
+├── docs/                       文档索引见 docs/README.md
+├── examples/personas/          可直接复制的人格卡样例
+├── release/                    打包产物（gitignore）
+└── lib/                        构建产物（gitignore）
 ```
 
 ## 数据长什么样
@@ -61,9 +66,9 @@ wechat-persona/
 
 ```bash
 DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-npm run build && npm pack
+npm run build && npm run pack        # 产物落到 release/
 "$DSH" plugin --profile desktop remove dsh-wechat-persona   # 升级时先移除
-"$DSH" plugin --profile desktop add ./dsh-wechat-persona-<version>.tgz
+"$DSH" plugin --profile desktop add ./release/dsh-wechat-persona-<version>.tgz
 ```
 
 装完**完全退出并重开** DSH（bundle 层只在启动时组装）。

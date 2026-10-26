@@ -33,7 +33,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "clean": "rm -rf lib",
-    "login": "node --experimental-strip-types scripts/login.ts"
+    "login": "node --experimental-strip-types scripts/login.ts",
+    "pack": "npm pack --pack-destination release"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
