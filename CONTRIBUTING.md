@@ -63,7 +63,7 @@ The directory layout is a contract, not a suggestion. Read
 | Generic image format and GIF handling | `src/media/` |
 | Reply splitting, pacing, retries | `src/reply/` |
 | Pure text transforms | `src/text/` |
-| Panel page, routes, registration | `src/panel/` |
+| Archived web and mini-program experiments | `archive/settings-clients/` (not in the active plugin) |
 | Plugin install, lifecycle, service wiring | `src/app/` |
 
 Rules that reviewers enforce:
@@ -74,7 +74,8 @@ Rules that reviewers enforce:
   about DSH or iLink. `src/ilink/` must not know about personas or the panel.
 - Do not add pass-through re-export files, and do not add a barrel `index.ts`
   per directory.
-- `src/` never imports from `scripts/` or `test/`. Scripts may import `src/`.
+- `src/` never imports from `archive/`, `scripts/` or `test/`. Scripts may import `src/`.
+- Current menus use Chinese commands and compact text responses. Split settings are not a menu feature. Archive clients have their own checks and are excluded from the main build and package.
 - Pure logic (parsing, splitting, marker extraction) belongs in a module that
   does no filesystem or network IO, so it can be unit tested directly.
 

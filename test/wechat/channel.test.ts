@@ -433,7 +433,28 @@ describe('内置命令', () => {
     await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/help' } }] }))
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.equal(delivered.length, 0)
-    assert.match(sent[0] ?? '', /可用命令/)
+    assert.match(sent[0] ?? '', /设置 · 打开聊天设置/)
+  })
+
+  it('设置打开菜单，回复数字就是选项', async () => {
+    const { channel, delivered, sent, settings } = await setup()
+    await channel.handle(userMessage({ message_id: 'm0', item_list: [{ type: 1, text_item: { text: '设置' } }] }))
+    assert.match(sent[0] ?? '', /1 {2}换人格/)
+    assert.match(sent[0] ?? '', /当前人格：甲/)
+    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '1' } }] }))
+    assert.match(sent[1] ?? '', /切换人格/)
+    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '2' } }] }))
+    assert.match(sent[2] ?? '', /已切到「乙」/)
+    assert.equal((await settings.get('wxid-owner')).personaId, 'beta')
+    assert.equal(delivered.length, 0)
+  })
+
+  it('菜单里说别的事就收起菜单，不吞消息', async () => {
+    const { channel, delivered } = await setup()
+    await channel.handle(userMessage({ message_id: 'x0', item_list: [{ type: 1, text_item: { text: '设置' } }] }))
+    await channel.handle(userMessage({ message_id: 'x1', item_list: [{ type: 1, text_item: { text: '3 点开会' } }] }))
+    assert.equal(delivered.length, 1)
+    assert.equal(delivered[0]?.text, '3 点开会')
   })
 
   it('/new 之后的消息用新代次', async () => {
@@ -461,8 +482,8 @@ describe('内置命令', () => {
     const { channel, sent } = await setup()
     await channel.handle(userMessage({ item_list: [{ type: 1, text_item: { text: '/persona' } }] }))
     await new Promise(resolve => setTimeout(resolve, 10))
-    assert.match(sent[0] ?? '', /alpha 甲/)
-    assert.match(sent[0] ?? '', /beta 乙/)
+    assert.match(sent[0] ?? '', /1 {2}甲  ✓ 当前使用/)
+    assert.match(sent[0] ?? '', /2 {2}乙/)
   })
 
   it('/persona <id> 切换并持久化', async () => {
@@ -649,83 +670,6 @@ describe('交付文件', () => {
     emit('channel-persona-wxid-owner', { type: 'deliverables/presented', data: { files: [{ path: '/a.docx' }] } })
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.ok(sent.some(text => text.includes('文件未确认发出')), JSON.stringify(sent))
-  })
-})
-
-describe('设置卡片', () => {
-  function setup() {
-    const { sessions, delivered } = fakeSessions()
-    const { events, emit } = fakeEvents()
-    const sent: string[] = []
-    const saved: Record<string, unknown>[] = []
-    let current = { enabled: true }
-    const settings = {
-      get: async () => current,
-      save: async (_peer: string, next: typeof current) => { current = next; saved.push(next); return next },
-    }
-    const channel = new Channel({
-      api: {} as ApiClient,
-      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
-      sessions,
-      access: createAccessPolicy({ owner: 'wxid-owner' }),
-      personas: new PersonaStore('/nonexistent'),
-      defaultPersona: 'default',
-      replies: new ReplyQueue({ send: async (_peer, text) => { sent.push(text) }, sleep: async () => {} }),
-      events,
-      report: () => {},
-      sleep: async () => {},
-      mergeWindowMs: 0,
-      progressAfterMs: 0,
-      settings: settings as never,
-    })
-    return { channel, sent, saved, delivered, emit }
-  }
-
-  it('/menu 发一张卡片', async () => {
-    const { channel, sent } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
-    await channel.whenIdle()
-    assert.equal(sent.length, 1)
-    assert.match(sent[0] ?? '', /设置/)
-    assert.match(sent[0] ?? '', /1 {2}人格/)
-  })
-
-  it('回数字打开分条设置，再选项只回一行确认', async () => {
-    const { channel, sent, saved } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '菜单' } }] }))
-    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '4' } }] }))
-    await channel.handle(userMessage({ message_id: 'm3', item_list: [{ type: 1, text_item: { text: '1' } }] }))
-    assert.equal(saved.length, 1)
-    assert.equal(saved[0]?.['split'], 'sentence')
-    assert.equal(sent.length, 3)
-    assert.match(sent[sent.length - 1] ?? '', /分条：按句子/)
-  })
-
-  it('非数字消息会收起卡片并照常进模型', async () => {
-    const { channel, sent, delivered } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
-    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '帮我看看桌面' } }] }))
-    assert.equal(delivered.length, 1)
-    assert.match(delivered[0]?.text ?? '', /帮我看看桌面/)
-    assert.equal(sent.length, 1)
-  })
-
-  it('0 收起卡片', async () => {
-    const { channel, sent } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
-    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '0' } }] }))
-    assert.match(sent[sent.length - 1] ?? '', /收起来/)
-  })
-
-  it('进人格面板后选序号会切换', async () => {
-    const { channel, sent, saved } = setup()
-    await channel.handle(userMessage({ message_id: 'm1', item_list: [{ type: 1, text_item: { text: '/menu' } }] }))
-    await channel.handle(userMessage({ message_id: 'm2', item_list: [{ type: 1, text_item: { text: '1' } }] }))
-    assert.match(sent[sent.length - 1] ?? '', /人格/)
-    // 这里的人格目录是空的：选一个不存在的序号只是再发一次面板，不能崩。
-    await channel.handle(userMessage({ message_id: 'm3', item_list: [{ type: 1, text_item: { text: '1' } }] }))
-    assert.match(sent[sent.length - 1] ?? '', /人格/)
-    assert.equal(saved.length, 0)
   })
 })
 

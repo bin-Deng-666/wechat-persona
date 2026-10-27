@@ -20,25 +20,26 @@ export interface ParsedCommand {
   args: string[]
 }
 
-/** 已知命令及其一句话说明。 */
-export const COMMANDS: readonly { name: string; usage: string; description: string }[] = [
-  { name: 'help', usage: '帮助', description: '列出这些命令' },
-  { name: 'new', usage: '新对话', description: '开一段新对话（旧记录保留，不再带上下文）' },
-  { name: 'compact', usage: '压缩', description: '把当前对话的旧历史压成摘要，腾出上下文' },
-  { name: 'status', usage: '状态', description: '当前人格、会话代次、上下文轮数' },
-  { name: 'persona', usage: '人格 [id]', description: '查看或切换这个聊天的人格' },
-  { name: 'style', usage: '分条 [字数|按句|按段|不切|恢复]', description: '看或改回答的分条方式' },
-  { name: 'stop', usage: '停止', description: '打断正在跑的这一轮' },
-  { name: 'menu', usage: '菜单 / 设置', description: '打开设置卡片（人格/模型/记忆/分条）' },
-  { name: '表情', usage: '表情 [收 名字|发 名字]', description: '看表情库、收藏或发送表情' },
+type CommandGroup = '常用入口' | '对话管理' | '表情用法'
+
+/** 指令说明与帮助分组使用同一份清单。 */
+export const COMMANDS: readonly { name: string; usage: string; description: string; group: CommandGroup }[] = [
+  { name: 'menu', usage: '设置', description: '打开聊天设置', group: '常用入口' },
+  { name: 'persona', usage: '人格', description: '选一种喜欢的聊天风格', group: '常用入口' },
+  { name: 'memory', usage: '记忆', description: '看看已经记住了哪些事', group: '常用入口' },
+  { name: 'status', usage: '状态', description: '查看当前人格和对话情况', group: '常用入口' },
+  { name: 'help', usage: '帮助', description: '查看这份指令说明', group: '常用入口' },
+  { name: 'new', usage: '新对话', description: '从新话题开始，旧记录保留', group: '对话管理' },
+  { name: 'compact', usage: '压缩', description: '整理前面的内容，继续当前对话', group: '对话管理' },
+  { name: 'stop', usage: '停止', description: '停止当前任务和待发送的消息', group: '对话管理' },
+  { name: '表情', usage: '表情', description: '查看收藏的表情', group: '表情用法' },
+  { name: '表情', usage: '表情 收 名字', description: '收藏刚发来的图片', group: '表情用法' },
+  { name: '表情', usage: '表情 发 名字', description: '发送指定的表情', group: '表情用法' },
 ]
 
 const CHINESE_COMMANDS: Record<string, string> = {
-  '菜单': 'menu', '设置': 'menu', '帮助': 'help', '新对话': 'new', '压缩': 'compact', '压缩对话': 'compact',
-  '状态': 'status', '人格': 'persona', '分条': 'style', '停止': 'stop', '表情': '表情',
-}
-const STYLE_ARGUMENTS: Record<string, string> = {
-  '按句': 'sentence', '按段': 'paragraph', '不切': 'none', '恢复': 'reset',
+  '菜单': 'menu', '设置': 'menu', '记忆': 'memory', '帮助': 'help', '新对话': 'new', '压缩': 'compact', '压缩对话': 'compact',
+  '状态': 'status', '人格': 'persona', '停止': 'stop', '表情': '表情',
 }
 
 /**
@@ -50,27 +51,41 @@ export function parseCommand(text: string): ParsedCommand | undefined {
   const trimmed = text.trim()
   const slash = trimmed.startsWith('/')
   const [head = '', ...rest] = (slash ? trimmed.slice(1) : trimmed).split(/\s+/u)
-  const name = slash ? (CHINESE_COMMANDS[head] ?? head.toLowerCase()) : CHINESE_COMMANDS[head]
+  const name = slash ? (CHINESE_COMMANDS[head] ?? ({ settings: 'menu' }[head.toLowerCase()] ?? head.toLowerCase())) : CHINESE_COMMANDS[head]
   if (name === undefined || name === '') return undefined
   const args = rest.filter(part => part !== '')
   // 不带参数的中文指令必须独占整条消息；“菜单怎么设计”是正常聊天。
   if (!slash && args.length > 0) {
     if (name === 'persona' && (args.length !== 1 || !/^[a-z0-9-]{1,32}$/u.test(args[0]!))) return undefined
-    if (name === 'style' && (args.length !== 1 || !/^(?:\d+|按句|按段|不切|恢复|sentence|paragraph|none|reset)$/u.test(args[0]!))) return undefined
     if (name === '表情' && !['收', '收下', '发', '发送'].includes(args[0]!)) return undefined
-    if (!['persona', 'style', '表情'].includes(name)) return undefined
+    if (!['persona', '表情'].includes(name)) return undefined
   }
-  return { name, args: name === 'style' ? args.map(arg => STYLE_ARGUMENTS[arg] ?? arg) : args }
+  return { name, args }
 }
 
 /** `/help` 的回复。 */
 export function formatHelp(): string {
-  return ['可用命令：', ...COMMANDS.map(command => `${command.usage} —— ${command.description}`)].join('\n')
+  const sections = (['常用入口', '对话管理', '表情用法'] as const).map(group => [
+    group,
+    ...COMMANDS.filter(command => command.group === group).map(command => `${command.usage} · ${command.description}`),
+  ].join('\n'))
+  return [
+    '📖 使用帮助',
+    '想做什么，直接发送对应的中文就好。',
+    '',
+    sections.join('\n\n'),
+    '',
+    '例如：先发一张图片，再发送「表情 收 开心」。',
+    '',
+    '菜单内回复数字选择，「返回」回上一级，「关闭」退出。',
+    '「菜单」也能打开设置，「压缩对话」也能整理内容。',
+    '指定人格可发送「人格 id」。',
+  ].join('\n')
 }
 
 /** 未知命令的回复。 */
 export function formatUnknown(name: string): string {
-  return `没有 /${name} 这个命令。发“帮助”看全部。`
+  return `暂时没有 /${name} 这个指令。\n发送「帮助」，看看可以怎么用。`
 }
 
 /** `/status` 的输入。 */
@@ -93,13 +108,15 @@ export interface StatusInput {
  */
 export function formatStatus(input: StatusInput): string {
   const lines = [
+    '📍 当前状态',
+    '',
     `人格：${input.personaName}（${input.personaId}）`,
-    `对话：第 ${String(input.generation + 1)} 段${input.generation > 0 ? `（代次 g${String(input.generation)}）` : ''}`,
+    `对话：第 ${String(input.generation + 1)} 段`,
     `累计消息：${String(input.turns)} 条`,
     `权限：${input.permission}`,
   ]
   if (input.lastActive !== undefined) lines.push(`最近活跃：${input.lastActive}`)
-  lines.push('发“新对话”重新开始，发“人格”换人格。')
+  lines.push('', '想从新话题开始，发送「新对话」。')
   return lines.join('\n')
 }
 
@@ -115,14 +132,14 @@ export interface PersonaChoice {
  * @param switched - 已经切换过去的人格（有值时文案是「已切换」）。
  */
 export function formatPersona(current: string, choices: readonly PersonaChoice[], switched?: PersonaChoice): string {
-  if (switched !== undefined) return `已切到「${switched.name}」（${switched.id}），下一条消息生效。`
+  if (switched !== undefined) return `✓ 已切到「${switched.name}」\n下一条消息就会使用这个人格。`
   const list = choices.map(choice => `${choice.id === current ? '→ ' : '  '}${choice.id} ${choice.name}`)
-  return ['可用人格：', ...list, '', '用“人格 <id>”切换，或发“菜单”选择。'].join('\n')
+  return ['可用人格：', ...list, '', '用“人格 <id>”切换，或发“设置”选择。'].join('\n')
 }
 
 /** `/new` 的回复。 */
 export function formatNewChat(generation: number): string {
-  return `已开新对话（第 ${String(generation + 1)} 段）。之前的内容还在记录里，但这轮开始不再带进上下文。`
+  return `✨ 已开新对话 · 第 ${String(generation + 1)} 段\n\n可以从新话题开始聊了。\n之前的内容还在记录里，不会带进这段对话。`
 }
 
 /**
@@ -132,11 +149,11 @@ export function formatNewChat(generation: number): string {
 export function formatCompact(outcome: CompactOutcome): string {
   switch (outcome.kind) {
     case 'done':
-      return `已压缩 ${String(outcome.shadowed)} 条历史（约 ${String(outcome.tokens)} tokens）。旧记录还留在会话里，只是不再进入上下文。`
+      return `✓ 对话已整理\n\n已压缩 ${String(outcome.shadowed)} 条历史（约 ${String(outcome.tokens)} tokens）。\n旧记录仍然保留，可以继续当前话题。`
     case 'nothing':
-      return '这段对话还没有可压缩的历史。'
+      return '这段对话还没有可压缩的历史。\n先继续聊，内容多了再整理就好。'
     case 'busy':
-      return '现在有一轮正在跑，等它跑完再压缩。'
+      return '当前任务还在进行中，等它结束后再整理对话。\n需要打断时，可以发送「停止」。'
     case 'cancelled':
       return '压缩被取消了。'
     case 'unavailable':
@@ -157,29 +174,4 @@ export function formatAgo(ms: number): string {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${String(hours)} 小时前`
   return `${String(Math.floor(hours / 24))} 天前`
-}
-
-/** `/style` 的输入。 */
-export interface StyleInput {
-  /** 每条气泡的目标字数。 */
-  maxChars: number
-  /** 切分粒度。 */
-  split: 'paragraph' | 'sentence' | 'none'
-  /** 这些值是不是这个聊天自己的设置（否则来自人格卡）。 */
-  overridden: boolean
-}
-
-/**
- * `/style` 的回显。
- * @param input - 当前生效的发送形态。
- */
-export function formatStyle(input: StyleInput): string {
-  const lines = [
-    `分条：每条约 ${String(input.maxChars)} 字，按${
-      input.split === 'sentence' ? '句子' : input.split === 'none' ? '不切' : '段落'
-    }切（不超过 ${String(input.maxChars)} 字就一条发完）`,
-    `来源：${input.overridden ? '这个聊天的设置' : '人格卡'}（“分条 恢复”恢复人格卡）`,
-  ]
-  lines.push('调整：分条 160 改字数；分条 按句；分条 不切。')
-  return lines.join('\n')
 }

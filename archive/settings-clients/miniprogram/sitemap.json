@@ -1,0 +1,1 @@
+{"desc":"设置页面包含个人资料，不提供搜索索引。","rules":[{"action":"disallow","page":"*"}]}

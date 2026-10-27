@@ -1,0 +1,404 @@
+[
+  {
+    "original": "src/panel/routes.ts",
+    "archived": "src/panel/routes.ts",
+    "sha256BeforeMove": "38263423cb3ee90b9f9ed6de65d13c9ce3ab34d5ddb7d3e629f9578b61434845",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/repository.ts",
+    "archived": "src/panel/repository.ts",
+    "sha256BeforeMove": "5013d9219dd440f537f2f500c578cdae52e6807b5507ea6cd2b8ba805bc5532a",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/main.ts",
+    "archived": "src/panel/main.ts",
+    "sha256BeforeMove": "dbb2dc084e9c286f7ff7bf98b8aebcf5bbdd20a3bbf8cd2bbd4b0fb44771596f",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/styles.ts",
+    "archived": "src/panel/styles.ts",
+    "sha256BeforeMove": "855ec567de843c536c5649f64170b9e0804b332545f8dff619db2223d999720a",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/http.ts",
+    "archived": "src/panel/http.ts",
+    "sha256BeforeMove": "535c7626698227a5f56e5bab190f6d7cba541fb184ec91ebc8f81d8f7cebc6bc",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/assets.ts",
+    "archived": "src/panel/assets.ts",
+    "sha256BeforeMove": "6cc87957e395b3c7251e51d3802e1840ce143f6b992f280d7d27053ac9553b17",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/rpc.ts",
+    "archived": "src/panel/rpc.ts",
+    "sha256BeforeMove": "7ff357598233fe1d521fb67a057064eeecd20d90b415f928d0552d7a3cc0205f",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/page.ts",
+    "archived": "src/panel/page.ts",
+    "sha256BeforeMove": "0b39a6602378b150c1be0313856f31948c8b4526bfe68754659b42066d32870d",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/client.ts",
+    "archived": "src/panel/client.ts",
+    "sha256BeforeMove": "511a6475e445ee87d51789c1fecd7a2f895b6a420f34bfea8e3ef6ac5e5c5aed",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/register.ts",
+    "archived": "src/panel/register.ts",
+    "sha256BeforeMove": "b4a778503c3d1c2f03b65136e480317629376146ff6f0bfa3b3f49e4ccafd29b",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/config.ts",
+    "archived": "src/panel/config.ts",
+    "sha256BeforeMove": "f2da223be2252842559a0d081d29236546bacd9cc514e59cb18fb7670b67288a",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/server.ts",
+    "archived": "src/panel/server.ts",
+    "sha256BeforeMove": "93605620c28b30ab6862fd7c89e853ff0df6960d8650028dbd6453cea52f050d",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/service.ts",
+    "archived": "src/panel/service.ts",
+    "sha256BeforeMove": "723d2381833c6378c65285c03c6e3d18797f87a8ff74285d92e1f826aa6ef6e0",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/auth.ts",
+    "archived": "src/panel/auth.ts",
+    "sha256BeforeMove": "98d33d4700fda0d7d25b36690ce3efa3fbd0404d552fd2c27260156358506406",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/guide.ts",
+    "archived": "src/panel/guide.ts",
+    "sha256BeforeMove": "5f979ca55a981cf47d42354a4d0e86a3b0233016214dc03799f4b472e50d930a",
+    "mode": "move"
+  },
+  {
+    "original": "src/panel/auth-client.ts",
+    "archived": "src/panel/auth-client.ts",
+    "sha256BeforeMove": "f3abf2e72dfde79c2e478c283fc7ed24d2b85872709c61a0f3dc43364ba452e1",
+    "mode": "move"
+  },
+  {
+    "original": "src/auth/session.ts",
+    "archived": "src/auth/session.ts",
+    "sha256BeforeMove": "af6d9be9261e7980da62c6109e5ba39fe8ec5d6f0849db298430db9662c3959c",
+    "mode": "move"
+  },
+  {
+    "original": "src/auth/qr.ts",
+    "archived": "src/auth/qr.ts",
+    "sha256BeforeMove": "7334e599532d7dbd730c74378349949782fe887df6c0a01405096ce4793aabc6",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/app.json",
+    "archived": "miniprogram/app.json",
+    "sha256BeforeMove": "980fd0f5e7da83c4cb5d1d36b68dcda7a1545d6669120267a295bed92aee1646",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/project.config.json",
+    "archived": "miniprogram/project.config.json",
+    "sha256BeforeMove": "b409f53c518997135acc68d267dafdb1fbdfb494f3e955a864987de7fef95f4d",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/config.js",
+    "archived": "miniprogram/config.js",
+    "sha256BeforeMove": "a7bf0437c65629e7431a370befbdf38f8b5170b606ff620c63d6848eb63ef64c",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/README.md",
+    "archived": "miniprogram/README.md",
+    "sha256BeforeMove": "3ed3acad6d7f2a0c712bcc3f2e3a643c55ec89ae67b7e57f5af9a39078086731",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/app.wxss",
+    "archived": "miniprogram/app.wxss",
+    "sha256BeforeMove": "12eac3d6938a03f88cc0a00b29d0573174e4bb9d498023b8dd2a833df3f258c2",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/sitemap.json",
+    "archived": "miniprogram/sitemap.json",
+    "sha256BeforeMove": "65d0a1acc777f20c75f6bd141d62d11ae5fc9aac5305ccfdf8ed4e53b4a23097",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/app.js",
+    "archived": "miniprogram/app.js",
+    "sha256BeforeMove": "cb33f8cf34fa822e0a22482d8bddcc58461fc070feeb07ff15143a68c278a815",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/utils/api.js",
+    "archived": "miniprogram/utils/api.js",
+    "sha256BeforeMove": "e6bfd127cd57971bef386a8ff83d30cda95aea4d474550b77dcde6818b084047",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/stickers/edit.js",
+    "archived": "miniprogram/pages/stickers/edit.js",
+    "sha256BeforeMove": "28974fb3f6dcbf4f184afc4eb5ae8e117552400da313ffa77fe5838c7a9add9e",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/stickers/index.wxml",
+    "archived": "miniprogram/pages/stickers/index.wxml",
+    "sha256BeforeMove": "c2a9719f9d24f0561d1c0d79481bf92abc42a0c2eac7501c4a00ce5e08671d9f",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/stickers/index.js",
+    "archived": "miniprogram/pages/stickers/index.js",
+    "sha256BeforeMove": "202246758c88eca849f525ca368bb43af9131e9d3699a5f0fed67a4fd8d5d520",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/stickers/edit.wxml",
+    "archived": "miniprogram/pages/stickers/edit.wxml",
+    "sha256BeforeMove": "c41637d28a31b504397da9ece8075a0cbedf5663b1578692386e9f81e72b466b",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/memory/edit.js",
+    "archived": "miniprogram/pages/memory/edit.js",
+    "sha256BeforeMove": "2d2933c4cd0252bd45fe8f3f8e4eef09a2d0d34a5b0fb51b355e40e4d9118d67",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/memory/index.wxml",
+    "archived": "miniprogram/pages/memory/index.wxml",
+    "sha256BeforeMove": "34b8f8c684d45c9e63d6f38dd1d6220df5c1064d87295d9f74f4e26b4264643a",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/memory/index.js",
+    "archived": "miniprogram/pages/memory/index.js",
+    "sha256BeforeMove": "cc149ae8b1da85c44c8fd574411aae393c6de108b339292cc931ddbdb57a928e",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/memory/edit.wxml",
+    "archived": "miniprogram/pages/memory/edit.wxml",
+    "sha256BeforeMove": "f0360f35fccfc9c0e5140dd240d9db6eed6d764676861ffc8c3aedb89f3b87af",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/chat/index.wxml",
+    "archived": "miniprogram/pages/chat/index.wxml",
+    "sha256BeforeMove": "244fcd83c16b8298ab5d865e44a88559ce2da3dfce6256b05617e99d159f433f",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/chat/index.js",
+    "archived": "miniprogram/pages/chat/index.js",
+    "sha256BeforeMove": "a6280aaae79d56a9fc708f58551c49cad9ae6ba557f339c37ed5f43268a996fa",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/personas/edit.js",
+    "archived": "miniprogram/pages/personas/edit.js",
+    "sha256BeforeMove": "2703a39bc4073fcc3f52a78c77560c22e563a6b62428934674cabe64721f5e47",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/personas/index.wxml",
+    "archived": "miniprogram/pages/personas/index.wxml",
+    "sha256BeforeMove": "bae9a191f8f49e0e2c794d3fcf32ab4406e2fd76283145c8a8be3c199d6a43e4",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/personas/index.js",
+    "archived": "miniprogram/pages/personas/index.js",
+    "sha256BeforeMove": "ee8272b450d385b0750b616c251c44d7facb237f729970158781aff030080a79",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/personas/edit.wxml",
+    "archived": "miniprogram/pages/personas/edit.wxml",
+    "sha256BeforeMove": "b276fda9e6064e80e3f57e9e6d6046ac2fe305e02213dffc14eb20e03821d824",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/mine/index.wxml",
+    "archived": "miniprogram/pages/mine/index.wxml",
+    "sha256BeforeMove": "af4e5bcad26f604f316940d3c1231b08a618ae6bdfac4fd14021a12a3dd6b1d7",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/mine/index.js",
+    "archived": "miniprogram/pages/mine/index.js",
+    "sha256BeforeMove": "c82cfc65b21f0676964677efd50c447a436c24fb92b7663e848bbc84251617e4",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/bind/index.wxml",
+    "archived": "miniprogram/pages/bind/index.wxml",
+    "sha256BeforeMove": "b3ef387b4f0db00bb25fca13cf050e3d7cedbd7dc5ed980a1666dbee1392c691",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/bind/index.js",
+    "archived": "miniprogram/pages/bind/index.js",
+    "sha256BeforeMove": "97496060d3b91da2961e73c12e234fb748ed73ac377bb8513a0f08f690b01f0e",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/bind/index.json",
+    "archived": "miniprogram/pages/bind/index.json",
+    "sha256BeforeMove": "71587a16e01f7aa9e29a8b2f0641de129c9071455996665d66bf9b0343233ff1",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/help/index.wxml",
+    "archived": "miniprogram/pages/help/index.wxml",
+    "sha256BeforeMove": "13bead4efe4b4409ad25a42a272d2391d24a89884b8ee1b7380eabefc7c6466f",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/help/index.js",
+    "archived": "miniprogram/pages/help/index.js",
+    "sha256BeforeMove": "fca2611cbbde0090ad36ab808146b8ad968ee13ddcfed41ab140799b53b00015",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/devices/index.wxml",
+    "archived": "miniprogram/pages/devices/index.wxml",
+    "sha256BeforeMove": "08a45534f1687b1976e9c3985660c92e6e78f761775dbcfcf45e8572ec893199",
+    "mode": "move"
+  },
+  {
+    "original": "miniprogram/pages/devices/index.js",
+    "archived": "miniprogram/pages/devices/index.js",
+    "sha256BeforeMove": "489a719ff48bcb446860f17c270638a4a2ec5367463535e2fdd3e975bb3a17a8",
+    "mode": "move"
+  },
+  {
+    "original": "scripts/check-miniprogram.mjs",
+    "archived": "scripts/check-miniprogram.mjs",
+    "sha256BeforeMove": "7389f621ae4ae5a6c17d59d1467846081ab06365bf638af4603c1408b3c54925",
+    "mode": "move"
+  },
+  {
+    "original": "scripts/configure-miniprogram.mjs",
+    "archived": "scripts/configure-miniprogram.mjs",
+    "sha256BeforeMove": "1ba9e199340f0c6e1cdedcb961f202c7a2cb3b237d45f8ad3258a2e20fefa1c3",
+    "mode": "move"
+  },
+  {
+    "original": "test/panel/auth.test.ts",
+    "archived": "test/panel/auth.test.ts",
+    "sha256BeforeMove": "61c67ddde52f4b07153c67ad18da75d70bad2882920f5daa828038e5cf260920",
+    "mode": "move"
+  },
+  {
+    "original": "test/panel/miniprogram.test.ts",
+    "archived": "test/panel/miniprogram.test.ts",
+    "sha256BeforeMove": "5ae18b918db0b09e13c7d1057e899466ad59de56f36313ffbc29d47c00b56931",
+    "mode": "move"
+  },
+  {
+    "original": "test/panel/persistence.test.ts",
+    "archived": "test/panel/persistence.test.ts",
+    "sha256BeforeMove": "fd80bb21f8b6f55052c21ae10a9d7745d4c444fc11055c902ceed0f2ee786917",
+    "mode": "move"
+  },
+  {
+    "original": "test/panel/routes.test.ts",
+    "archived": "test/panel/routes.test.ts",
+    "sha256BeforeMove": "fcdac7e9219892b41b3106491cc2226a35262da46bec6eb0498c748af2447aa0",
+    "mode": "move"
+  },
+  {
+    "original": "test/panel/server.test.ts",
+    "archived": "test/panel/server.test.ts",
+    "sha256BeforeMove": "039a69afb7a54ff5897804da2a6f6284e7971b6650f71ac5bafe359550004054",
+    "mode": "move"
+  },
+  {
+    "original": "docs/modules/panel.md",
+    "archived": "docs/modules/panel.md",
+    "sha256BeforeMove": "99bfd791257d2c56e70e137e7191db93a86384d335d0398a66d333dd1bc8cc67",
+    "mode": "move"
+  },
+  {
+    "original": "src/index.ts",
+    "archived": "src/index.ts",
+    "sha256BeforeMove": "1ea6f4b4c0518752d33b367d6527fa7df5f47b6f79fbe86347430797c209dbc7",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/app/coordinator.ts",
+    "archived": "src/app/coordinator.ts",
+    "sha256BeforeMove": "7ad5f83597382e60ec6d03ff35a57bb75093ddc59f48b79fabf5ae69c4f00224",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/app/plugin.ts",
+    "archived": "src/app/plugin.ts",
+    "sha256BeforeMove": "9f8ab49b1db45325973073462cf15366f57ea980c98d47fb91078301d78b8518",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/wechat/channel.ts",
+    "archived": "src/wechat/channel.ts",
+    "sha256BeforeMove": "f2fdc0e3448288d6c613afbb15a80f8c35a88060c9950e80ce7eb54eb1fc6ac1",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/wechat/controls.ts",
+    "archived": "src/wechat/controls.ts",
+    "sha256BeforeMove": "3bc36755dc717a9d46a4dc17cc5dbeb81aac023b1bd4e6ca2622df6faf5e9cf7",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/wechat/commands.ts",
+    "archived": "src/wechat/commands.ts",
+    "sha256BeforeMove": "bd2b4edb95459f7e516dbca3bb4b6d94b2a0dd5cf6c3131ff75cca8dfce0247d",
+    "mode": "snapshot"
+  },
+  {
+    "original": "src/wechat/menu.ts",
+    "archived": "src/wechat/menu.ts",
+    "sha256BeforeMove": "7ee5fc2ccfad6225b6506e6952d848652989006e3ebd05432563a5c00cebccf9",
+    "mode": "snapshot"
+  },
+  {
+    "original": "test/app/plugin.test.ts",
+    "archived": "test/app/plugin.test.ts",
+    "sha256BeforeMove": "64f8e386bb74ecebb309f449af8f0dfe9930e818421cdce10a1643d563e9b5a7",
+    "mode": "snapshot"
+  },
+  {
+    "original": "tsdown.config.ts",
+    "archived": "tsdown.config.ts",
+    "sha256BeforeMove": "e6f7adf75d55bb580ad69701060e981036f3078b43dbd75954dde6f027a7b21f",
+    "mode": "snapshot"
+  },
+  {
+    "original": "SECURITY.md",
+    "archived": "SECURITY.md",
+    "sha256BeforeMove": "e6ea2f7972a45eca5ff2b1123d7edf325088559f4b99b5fb57604121a90615e5",
+    "mode": "snapshot"
+  }
+]

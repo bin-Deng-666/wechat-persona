@@ -1,0 +1,8 @@
+{
+  "pages": ["pages/chat/index", "pages/bind/index", "pages/memory/index", "pages/memory/edit", "pages/stickers/index", "pages/stickers/edit", "pages/mine/index", "pages/personas/index", "pages/personas/edit", "pages/devices/index", "pages/help/index"],
+  "window": {"navigationBarTitleText": "帽兜设置", "navigationBarBackgroundColor": "#f7f7f8", "navigationBarTextStyle": "black", "backgroundColor": "#f7f7f8", "backgroundTextStyle": "dark"},
+  "tabBar": {"color": "#85858f", "selectedColor": "#202024", "backgroundColor": "#ffffff", "borderStyle": "white", "list": [{"pagePath": "pages/chat/index", "text": "聊天"}, {"pagePath": "pages/memory/index", "text": "记忆"}, {"pagePath": "pages/stickers/index", "text": "表情"}, {"pagePath": "pages/mine/index", "text": "我的"}]},
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

@@ -1,0 +1,2 @@
+const api=require('../../utils/api')
+Page({data:{personas:[],error:''},onShow(){this.reload()},async reload(){try{const access=await api.request('/access');if(!access.admin)throw new Error('需要管理员权限');const list=await api.request('/personas');this.setData({personas:list.map(p=>({...p,initial:p.name.slice(0,1)})),error:''})}catch(error){this.setData({error:error.message})}},edit(e){wx.navigateTo({url:'/pages/personas/edit'+(e.currentTarget.dataset.id?'?id='+encodeURIComponent(e.currentTarget.dataset.id):'')})}})

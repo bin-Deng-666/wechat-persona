@@ -45,11 +45,27 @@ agent. That is the feature. Understand what it implies before deploying it.
 | Item | Location | Notes |
 |---|---|---|
 | Bot token and account id | `~/.dsh/wechat-persona/account.json` | Written with mode `0600`. Deleting it logs the bot out. |
-| Panel access key | Generated per process, printed in logs | Grants the same actions as the panel routes. Treat log files as sensitive. |
+| Archived device sessions | `~/.dsh/wechat-persona/settings/sessions.json` on previously configured hosts | The current plugin does not create or use web device sessions. Preserve old files privately; archived services must remain stopped unless deliberately restored. |
 | Chat transcripts | DSH session storage and `~/.dsh/wechat-persona/conversations/` | Contains original input, tool output, reply tokens, task snapshots and delivery status. Local conversation files use mode `0600`. |
 | Personal memories | `~/.dsh/wechat-persona/memory/` | Per-contact facts, original quotations, versions and deletion suppression keys. Legacy `memories.json` is retained as unverified data. |
 | Sticker assets | `~/.dsh/wechat-persona/stickers/` | Contains media received in chat. |
 | Diagnostic logs | `~/.dsh/wechat-persona/logs/` | May contain peer ids, tool names and error text. |
+
+### WeChat controls and archived clients
+
+Settings and help are handled in the admitted contact's WeChat conversation.
+The current plugin starts no settings HTTP listener, local control socket or
+background settings service. Menu state is scoped to the contact and expires
+after five minutes. Clearing memories requires a second menu confirmation.
+Pending approval replies take priority over menu choices.
+
+The web service, device authentication and mini program are preserved in
+[archive/settings-clients](archive/settings-clients/README.md), with their
+[historical security notes](archive/settings-clients/SECURITY.md). They are not
+part of the active build or package. Archiving source does not automatically
+uninstall an older background service; stop that service separately and keep
+its stored sessions private. Any future restoration needs a fresh review of
+authentication, contact isolation and network exposure.
 
 ### The default permission preset
 
@@ -88,7 +104,7 @@ The following are known and accepted, not vulnerabilities:
    and log the bot out.
 3. Run `npm run login` to scan a fresh QR code, which issues a new token.
 4. Rotate anything the agent could have reached: API keys in the environment,
-   SSH keys, and the panel key (restarting DSH regenerates it).
+   SSH keys, and stop any separately installed legacy settings service.
 5. Review `~/.dsh/wechat-persona/logs/` and the DSH session log for the actions
    that were taken.
 

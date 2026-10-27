@@ -1,195 +1,112 @@
-/**
- * 微信里的「设置卡片」。
- *
- * 微信没有按钮组件——iLink 机器人只能发文本/图片/文件，发不了带按钮的卡片。
- * 所以这里用最接近「点一下」的形式：一张编号卡片，回一个数字就是一次点击。
- *
- * 两个纪律：
- * - **卡片是临时的**：5 分钟没理就失效，免得三天后回一个「3」误触设置。
- * - **数字只在卡片有效时被消费**：其他消息照常进模型，不会因为一张卡片
- *   把「3 点开会」这种正常聊天吞掉。
- *
- * @module wechat-persona/wechat/menu
- */
-
-/**
- * 微信里的「设置卡片」。
- *
- * 微信没有按钮组件——iLink 机器人只能发文本/图片/文件，发不了带按钮的卡片。
- * 所以这里用最接近「点一下」的形式：一张编号卡片，回一个数字就是一次点击。
- *
- * 两个纪律：
- * - **卡片是临时的**：5 分钟没理就失效，免得三天后回一个「3」误触设置。
- * - **数字只在卡片有效时被消费**：其他消息照常进模型，不会因为一张卡片
- *   把「3 点开会」这种正常聊天吞掉。
- *
- * @module wechat-persona/wechat/menu
- */
+/** 微信内的设置菜单：中文入口、编号选择，五分钟无操作后失效。 */
 import { normalizeDigits } from '../text/digits.ts'
 
-/** 卡片面板。 */
-export type MenuPanel = 'root' | 'personas' | 'model' | 'memory' | 'style'
+export type MenuPanel = 'root' | 'personas' | 'memory' | 'clear-memory' | 'stickers'
 
-/** 渲染卡片需要的当前状态。 */
 export interface MenuView {
   personaId: string
   personaName: string
   personaChoices: readonly { id: string; name: string }[]
-  /** 当前模型 id；未知时为空串。 */
-  model: string
   memoryCount: number
-  /** 记忆预览（换行分隔）；面板里最多展示几条。 */
   memoryFacts: readonly string[]
-  maxChars: number
-  split: 'paragraph' | 'sentence' | 'none'
-  /** 分条设置是不是这个聊天自己设的。 */
-  overridden: boolean
-  /** 这个宿主能不能切模型（不能就只展示）。 */
-  canSwitchModel: boolean
-  /** 表情库里有几张。 */
   stickerCount: number
+  stickerNames: readonly string[]
 }
 
-/** 卡片有效期。 */
 export const MENU_TTL_MS = 5 * 60_000
+const BACK = '回复数字选择 · 0 返回上一级'
 
-const SPLIT_LABEL: Record<MenuView['split'], string> = {
-  paragraph: '按段落',
-  sentence: '按句子',
-  none: '不切',
-}
-
-/**
- * 把一句回复解析成卡片选项。
- *
- * @param text - 用户发的原文。
- * @returns 0–9 的选项号；不是单个数字时 undefined。
- */
+/** 仅接受单个数字，兼容全角数字和末尾句号。 */
 export function parseChoice(text: string): number | undefined {
-  // 中文输入法下很容易打出全角「１」；它不是另一个选项，就是 1。
   const normalized = normalizeDigits(text).trim().replace(/[。．.]$/u, '')
-  if (!/^\d$/u.test(normalized)) return undefined
-  return Number(normalized)
+  return /^\d$/u.test(normalized) ? Number(normalized) : undefined
 }
 
-/**
- * 渲染一张卡片。
- *
- * @param panel - 当前面板。
- * @param view - 当前状态。
- * @returns 可直接发送的纯文本。
- */
+/** 限制预览长度，避免长记忆把菜单挤成多屏。完整内容仍保留在记忆库。 */
+function preview(text: string): string {
+  const line = text.replace(/\s+/gu, ' ').trim()
+  const chars = Array.from(line)
+  return chars.length > 100 ? chars.slice(0, 100).join('') + '…' : line
+}
+
+/** 每个面板保持标题、内容、操作提示三部分，直接作为一条微信消息发送。 */
 export function renderMenu(panel: MenuPanel, view: MenuView): string {
   switch (panel) {
     case 'personas': {
-      const lines = ['人格', '']
-      // 最多 9 个：选项只有一位数字。
+      const lines = ['🎭 切换人格', '选一个你喜欢的聊天风格。', '']
+      if (!view.personaChoices.length) lines.push('还没有可选的人格。')
       view.personaChoices.slice(0, 9).forEach((choice, index) => {
-        const current = choice.id === view.personaId ? ' ✓' : ''
-        lines.push(`${String(index + 1)}  ${choice.name}（${choice.id}）${current}`)
+        lines.push(`${index + 1}  ${preview(choice.name)}${choice.id === view.personaId ? '  ✓ 当前使用' : ''}`)
       })
-      lines.push('', '0  返回')
-      return lines.join('\n')
+      if (view.personaChoices.length > 9) lines.push('', '其他人格可发送「人格 id」切换。')
+      return [...lines, '', BACK].join('\n')
     }
-
-    case 'model': {
-      const lines = ['模型', '', `当前：${view.model === '' ? '未知' : view.model}`]
-      if (view.canSwitchModel) {
-        lines.push('', '1  切到默认模型（跟随桌面端设置）')
-      } else {
-        lines.push('', '这个宿主不支持在聊天里换模型，去桌面端的模型选择器改。')
-      }
-      lines.push('', '0  返回')
-      return lines.join('\n')
-    }
-
     case 'memory': {
-      const lines = ['记忆', '']
-      if (view.memoryCount === 0) {
-        lines.push('还没有个人记忆。可保留跨对话有用的个人信息，例如说「记住我的沟通偏好……」。')
+      const lines = ['📝 个人记忆', '']
+      if (!view.memoryCount) {
+        lines.push('这里还没有记忆。', '', '想让我记住什么，可以直接告诉我：', '「记住，我喜欢简单直接的回答。」')
       } else {
-        lines.push(`已记 ${String(view.memoryCount)} 条：`)
-        for (const fact of view.memoryFacts.slice(0, 8)) lines.push(`· ${fact}`)
-        if (view.memoryCount > 8) lines.push(`…还有 ${String(view.memoryCount - 8)} 条`)
+        lines.push(`已经记下 ${view.memoryCount} 条：`, '')
+        for (const fact of view.memoryFacts.slice(0, 8)) lines.push(`· ${preview(fact)}`)
+        if (view.memoryCount > 8) lines.push(`…还有 ${view.memoryCount - 8} 条`)
+        lines.push('', '1  清空记忆')
       }
-      lines.push('', '1  清空记忆', '0  返回')
-      return lines.join('\n')
+      return [...lines, '', BACK].join('\n')
     }
-
-    case 'style': {
+    case 'clear-memory':
+      return ['📝 清空记忆', '', `这个聊天的 ${view.memoryCount} 条记忆将被删除。`, '清空后无法恢复，确认继续吗？', '', '1  确认清空', '0  先保留，返回记忆列表'].join('\n')
+    case 'stickers': {
+      const lines = ['🖼️ 表情库', '']
+      if (!view.stickerCount) {
+        lines.push('这里还没有收藏的表情。', '', '发来一张喜欢的图片，再给它起个名字：', '表情 收 开心')
+      } else {
+        lines.push(`${view.stickerCount} 张表情，聊天时可以用：`, '')
+        for (const name of view.stickerNames.slice(0, 10)) lines.push(`· ${preview(name)}`)
+        if (view.stickerCount > 10) lines.push(`…还有 ${view.stickerCount - 10} 张`)
+        lines.push('', '想发一张：表情 发 名字', '想收藏图片：表情 收 名字', '例如：表情 发 开心')
+      }
+      return [...lines, '', BACK].join('\n')
+    }
+    default:
       return [
-        '分条',
+        '⚙️ 聊天设置',
+        `当前人格：${preview(view.personaName)}`,
         '',
-        `当前：每条约 ${String(view.maxChars)} 字，${SPLIT_LABEL[view.split]}${view.overridden ? '（聊天设置）' : '（人格卡）'}`,
+        '1  换人格 · 选一种聊天风格',
+        `2  个人记忆 · 已记下 ${view.memoryCount} 条`,
+        `3  表情库 · ${view.stickerCount} 张可用`,
         '',
-        '1  按句子切',
-        '2  按段落切',
-        '3  不切（整条发）',
-        '4  每条约 200 字',
-        '5  恢复人格卡',
+        '4  新对话 · 从新话题开始',
+        '5  压缩对话 · 整理前面的内容',
         '',
-        '0  返回',
+        '回复数字选择 · 0 关闭',
+        '5 分钟内有效，也可以直接继续聊天',
       ].join('\n')
-    }
-
-    default: {
-      return [
-        '设置',
-        '',
-        `1  人格 · ${view.personaName}`,
-        `2  模型 · ${view.model === '' ? '未知' : view.model}`,
-        `3  记忆 · ${view.memoryCount === 0 ? '空' : `${String(view.memoryCount)} 条`}`,
-        `4  分条 · ${String(view.maxChars)} 字 / ${SPLIT_LABEL[view.split]}`,
-        `5  新对话${view.stickerCount > 0 ? `\n6  表情库 · ${String(view.stickerCount)} 张` : ''}`,
-        '',
-        '0  关闭（5 分钟内回复编号）',
-      ].join('\n')
-    }
   }
 }
 
-/**
- * 卡片点击之后落到哪个面板/动作。
- *
- * @param panel - 当前面板。
- * @param choice - 选项号。
- * @returns 下一个面板（`'close'` 表示收起），或者要执行的动作名。
- */
+/** 子菜单的 0 返回上一级，主菜单的 0 关闭。 */
 export function resolveChoice(panel: MenuPanel, choice: number): MenuChoice {
-  if (choice === 0) return { kind: 'close' }
-
+  if (choice === 0) return panel === 'root'
+    ? { kind: 'close' }
+    : { kind: 'panel', panel: panel === 'clear-memory' ? 'memory' : 'root' }
   switch (panel) {
     case 'root':
       switch (choice) {
         case 1: return { kind: 'panel', panel: 'personas' }
-        case 2: return { kind: 'panel', panel: 'model' }
-        case 3: return { kind: 'panel', panel: 'memory' }
-        case 4: return { kind: 'panel', panel: 'style' }
-        case 5: return { kind: 'action', action: 'new-chat' }
-        case 6: return { kind: 'action', action: 'sticker-library' }
+        case 2: return { kind: 'panel', panel: 'memory' }
+        case 3: return { kind: 'panel', panel: 'stickers' }
+        case 4: return { kind: 'action', action: 'new-chat' }
+        case 5: return { kind: 'action', action: 'compact' }
         default: return { kind: 'unknown' }
       }
-    case 'personas':
-      return { kind: 'action', action: `persona-${String(choice)}` }
-    case 'model':
-      return choice === 1 ? { kind: 'action', action: 'model-default' } : { kind: 'unknown' }
-    case 'memory':
-      return choice === 1 ? { kind: 'action', action: 'clear-memory' } : { kind: 'unknown' }
-    case 'style':
-      switch (choice) {
-        case 1: return { kind: 'action', action: 'split-sentence' }
-        case 2: return { kind: 'action', action: 'split-paragraph' }
-        case 3: return { kind: 'action', action: 'split-none' }
-        case 4: return { kind: 'action', action: 'max-chars-200' }
-        case 5: return { kind: 'action', action: 'style-reset' }
-        default: return { kind: 'unknown' }
-      }
-    default:
-      return { kind: 'unknown' }
+    case 'personas': return { kind: 'action', action: `persona-${choice}` }
+    case 'memory': return choice === 1 ? { kind: 'panel', panel: 'clear-memory' } : { kind: 'unknown' }
+    case 'clear-memory': return choice === 1 ? { kind: 'action', action: 'clear-memory' } : { kind: 'unknown' }
+    default: return { kind: 'unknown' }
   }
 }
 
-/** 点击结果。 */
 export type MenuChoice =
   | { kind: 'close' }
   | { kind: 'panel'; panel: MenuPanel }

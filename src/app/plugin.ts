@@ -1,4 +1,4 @@
-/** Cordis 插件安装：配置、宿主服务接入、审批和面板注册。 */
+/** Cordis 插件安装：配置、宿主服务接入和微信审批。 */
 import { isAbsolute, join, resolve } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
@@ -7,7 +7,6 @@ import { Coordinator, type ApprovalOutcome } from './coordinator.ts'
 import { name } from './identity.ts'
 import { seedDefaultPersona } from '../persona/store.ts'
 import type { AgentRegistryLike } from '../dsh/sessions.ts'
-import { registerPanel } from '../panel/register.ts'
 
 /** `approval/request` waterfall 的请求形状（只取用得到的字段）。 */
 interface ApprovalRequestLike {
@@ -76,6 +75,4 @@ function boot(ctx: Context, config: ConfigShape): void {
       { prepend: true },
     ))
   })
-
-  registerPanel(ctx, coordinator.panelHandlers(), url => { coordinator.announcePanel(url) })
 }

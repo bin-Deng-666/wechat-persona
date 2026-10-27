@@ -61,7 +61,6 @@ export interface ChannelOptions {
   prepareMedia?: (items: readonly MessageItem[], peerId?: string, signal?: AbortSignal) => Promise<PreparedMedia>
   activity?: ActivityStore
   memory?: PeerMemory
-  modelLabel?: string
   stickers?: Pick<StickerLibrary, 'names' | 'annotate' | 'adoptLatest'>
   mergeWindowMs?: number
   progressAfterMs?: number
@@ -101,8 +100,10 @@ export class Channel {
     this.activity = options.activity ?? { get: peer => activity.get(peer), touch: (peer, at) => { activity.set(peer, at) }, peers: () => [...activity.keys()] }
     this.controls = new ChatControls({ ...options,
       scopeFor: peer => this.states.get(peer)?.controlScope(),
-      planFor: peer => this.plans.get(peer), setPlan: (peer, plan) => { this.plans.set(peer, plan) },
-      contextTokenFor: peer => this.contextTokens.get(peer), lastSeen: peer => this.activity.get(peer),
+      planFor: peer => this.plans.get(peer),
+      lastSeen: peer => this.activity.get(peer),
+      contextTokenFor: peer => this.contextTokens.get(peer),
+      runBackground: task => { this.track(task) },
       turnsFor: peer => this.turnCounts.get(peer) ?? 0,
       cancelTurn: async peer => await this.stopConversation(await this.conversation(peer)),
       newConversation: async peer => await this.newConversation(await this.conversation(peer)),
@@ -185,16 +186,28 @@ export class Channel {
   private async dispatch(conversation: PeerConversation, record: InboundRecord): Promise<void> {
     if (this.closed) return
     const { peerId } = conversation
+    this.activity.touch(peerId, (this.options.now ?? Date.now)())
     const token = record.raw.context_token
     if (token) this.contextTokens.set(peerId, token)
     void this.options.typing?.start(peerId, token)
     if (this.options.approvals?.answer(peerId, record.text)) { await this.history.inputStatus(peerId, [record.id], 'control'); return }
+    // 菜单是一次性点击：只有有效期内的单个数字被消费，其余消息照常进模型。
+    try {
+      if (await this.controls.consumeMenu(peerId, record.text, conversation.generation)) {
+        await this.history.inputStatus(peerId, [record.id], 'control')
+        return
+      }
+    } catch (error) {
+      await this.history.inputStatus(peerId, [record.id], 'control')
+      this.options.report?.('菜单操作未完成', { peerId, error: String(error) })
+      this.notice(conversation, '这次设置未能完成，请重新发送「设置」再试。')
+      return
+    }
     const command = parseCommand(record.text)
     if (command) {
       await this.history.inputStatus(peerId, [record.id], 'control')
       const execute = async () => {
         try {
-          if (await this.controls.consumeMenu(peerId, record.text)) return
           await this.controls.execute(peerId, command, conversation.generation, token)
           await this.history.notice(peerId, `用户执行设置指令：${record.text}`)
         } catch (error) {
@@ -207,8 +220,6 @@ export class Channel {
       else await execute()
       return
     }
-    // Menu lookup can send a card, so it runs off the ingress loop as well.
-    if (await this.controls.consumeMenu(peerId, record.text)) { await this.history.inputStatus(peerId, [record.id], 'control'); return }
     if (!(await this.settingsFor(peerId)).enabled) { await this.history.inputStatus(peerId, [record.id], 'cancelled'); return }
     if (conversation.activity?.phase === 'compacting') conversation.invalidate()
     conversation.pending.push(record)
@@ -305,7 +316,6 @@ export class Channel {
     const active = conversation.invalidate()
     const output = this.options.replies.cancel(conversation.peerId)
     this.clearProgress(conversation.peerId)
-    this.controls.closeMenu(conversation.peerId)
     await this.history.cancelTask(conversation.peerId, conversation.generation)
     this.options.approvals?.cancel(conversation.peerId, '用户停止')
     const cancelled = await this.options.sessions.cancel?.(conversation.peerId, conversation.generation) ?? false

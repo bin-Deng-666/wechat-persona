@@ -7,8 +7,8 @@
  * @module wechat-persona/auth/session
  */
 
-import type { ApiClient } from '../ilink/api.ts'
-import { fetchQr, pollStatus, type QrCode } from '../ilink/login.ts'
+import type { ApiClient } from '../../../../src/ilink/api.ts'
+import { fetchQr, pollStatus, type QrCode } from '../../../../src/ilink/login.ts'
 import {
   advance,
   initialState,
@@ -18,7 +18,7 @@ import {
   type LoginCredentials,
   type LoginEffect,
   type LoginState,
-} from '../ilink/login-machine.ts'
+} from '../../../../src/ilink/login-machine.ts'
 
 export type LoginPhase = 'idle' | 'waiting' | 'scanned' | 'verify' | 'connected' | 'failed'
 

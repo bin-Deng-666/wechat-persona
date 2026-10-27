@@ -9,7 +9,9 @@
  * @module wechat-persona/chat/settings
  */
 
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
+import { atomicJson } from '../storage/atomic.ts'
+import { withFileLock } from '../storage/lock.ts'
 import { join } from 'node:path'
 
 export interface ChatSettings {
@@ -103,17 +105,18 @@ export class ChatSettingsStore {
    * @param settings - 要保存的设置。
    */
   async save(peerId: string, settings: ChatSettings): Promise<ChatSettings> {
-    const normalized = parseChatSettings(settings)
-    const dir = join(this.root, this.dirOf(peerId))
-    await mkdir(dir, { recursive: true, mode: 0o700 })
-    const target = this.fileOf(peerId)
-    const temp = `${target}.${String(process.pid)}.tmp`
-    // 目录名是转义过的，真实 peer id 存在文件里，listPeers 才能还原。
-    await writeFile(temp, JSON.stringify({ peerId, ...normalized }, null, 2), 'utf8')
-    await rename(temp, target)
-    // 写入后把缓存丢掉，下次 get 会按新 mtime 重新读，避免缓存与磁盘不一致。
-    this.cache.delete(peerId)
-    return normalized
+    return await this.update(peerId,() => settings)
+  }
+
+  /** 在文件事务内基于最新值执行部分修改，避免并发更新相互覆盖。 */
+  async update(peerId: string, change: (current: ChatSettings) => ChatSettings): Promise<ChatSettings> {
+    return await withFileLock(this.fileOf(peerId),async () => {
+      this.cache.delete(peerId)
+      const normalized = parseChatSettings(change(await this.get(peerId)))
+      await atomicJson(this.fileOf(peerId),{peerId,...normalized})
+      this.cache.delete(peerId)
+      return normalized
+    })
   }
 
   /**

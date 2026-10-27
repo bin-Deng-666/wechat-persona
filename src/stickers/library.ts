@@ -1,6 +1,8 @@
 /** 按内容去重的图片素材库。原件集中存储，识别结果与使用权限按联系人隔离。 */
-import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { atomicJson } from '../storage/atomic.ts'
+import { withFileLock } from '../storage/lock.ts'
 import { extname, join } from 'node:path'
 import { sniffImageType } from '../media/image.ts'
 import { normalizeStickerName, type StickerAnnotation } from './markers.ts'
@@ -25,7 +27,6 @@ interface ChatCatalog { version: 1; latest?: string; images: Record<string, Stor
 
 export class StickerLibrary {
   private readonly root: string
-  private readonly writes = new Map<string, Promise<unknown>>()
 
   constructor(root: string) { this.root = root }
 
@@ -121,6 +122,72 @@ export class StickerLibrary {
     return lines.join('\n')
   }
 
+  /** 面板预览：一张素材的元数据与原件绝对路径。 */
+  async locate(peerId: string, id: string): Promise<{ sticker: StoredSticker; file: string } | undefined> {
+    const sticker = (await this.readCatalog(peerId)).images[id]
+    return sticker === undefined ? undefined : { sticker, file: this.assetPath(sticker) }
+  }
+
+  /**
+   * 改一张素材的名字/描述/场景/状态。
+   *
+   * 定了名字就自动转成可发送（ready）；把名字清空会退回待判断（pending），
+   * 避免出现一张叫空字符串的 ready 素材。
+   */
+  async revise(peerId: string, id: string, patch: { name?: string; description?: string; scenes?: string; status?: StoredSticker['status'] }): Promise<StoredSticker | undefined> {
+    return await this.update(peerId, catalog => {
+      const sticker = catalog.images[id]
+      if (sticker === undefined) return undefined
+      if (patch.name !== undefined) {
+        const name = patch.name.trim() === '' ? undefined : normalizeStickerName(patch.name)
+        if (name === undefined && patch.name.trim() !== '') throw new Error('名字不合法：不超过 24 字，不能带空格和方括号')
+        if (name === undefined) { delete sticker.name; sticker.status = 'pending' }
+        else { sticker.name = name; sticker.status = 'ready' }
+      }
+      if (patch.description !== undefined) sticker.description = patch.description.slice(0, 200)
+      if (patch.scenes !== undefined) sticker.scenes = patch.scenes.slice(0, 120)
+      if (patch.status !== undefined) sticker.status = patch.status
+      if (sticker.status === 'ready' && (sticker.name === undefined || sticker.name === '')) sticker.status = 'pending'
+      return sticker
+    })
+  }
+
+  /** 从联系人目录移掉一张。原件按内容共享，不在这里删，别人不受影响。 */
+  async forget(peerId: string, id: string): Promise<boolean> {
+    return await this.update(peerId, catalog => {
+      if (catalog.images[id] === undefined) return false
+      delete catalog.images[id]
+      if (catalog.latest === id) catalog.latest = undefined
+      return true
+    })
+  }
+
+  /** 复制进 shared/：之后所有聊天都能用这个名字发。 */
+  async publish(peerId: string, id: string, rawName: string): Promise<string | undefined> {
+    const name = normalizeStickerName(rawName)
+    if (name === undefined) return undefined
+    const sticker = (await this.readCatalog(peerId)).images[id]
+    if (sticker === undefined) return undefined
+    const sharedDir = join(this.root, 'shared')
+    await mkdir(sharedDir, { recursive: true, mode: 0o700 })
+    const file = join(sharedDir, `${name}${EXTENSIONS[sticker.mediaType]}`)
+    await writeFile(file, await readFile(this.assetPath(sticker)), { mode: 0o600 })
+    return file
+  }
+
+  /** 人工共享表情（含绝对路径，供面板预览）。 */
+  async sharedEntries(): Promise<{ name: string; file: string }[]> {
+    return [...(await this.shared()).entries()].map(([name, file]) => ({ name, file }))
+  }
+
+  /** 删掉一张人工共享表情。 */
+  async unpublish(name: string): Promise<boolean> {
+    const file = (await this.shared()).get(name)
+    if (file === undefined) return false
+    await rm(file, { force: true })
+    return true
+  }
+
   private assetPath(image: Pick<StoredSticker, 'hash' | 'mediaType'>): string {
     return join(this.root, 'assets', image.hash.slice(0, 2), `${image.hash}${EXTENSIONS[image.mediaType]}`)
   }
@@ -139,20 +206,13 @@ export class StickerLibrary {
     }
   }
   private async update<T>(peerId: string, change: (catalog: ChatCatalog) => T): Promise<T> {
-    const previous = this.writes.get(peerId) ?? Promise.resolve()
-    const run = previous.catch(() => {}).then(async () => {
+    const file = this.chatFile(peerId)
+    return await withFileLock(file,async () => {
       const catalog = await this.readCatalog(peerId)
       const result = change(catalog)
-      const file = this.chatFile(peerId)
-      await mkdir(join(file, '..'), { recursive: true, mode: 0o700 })
-      const temp = `${file}.${randomUUID()}.tmp`
-      await writeFile(temp, JSON.stringify(catalog, null, 2), { mode: 0o600 })
-      await rename(temp, file)
+      await atomicJson(file,catalog)
       return result
     })
-    this.writes.set(peerId, run)
-    try { return await run }
-    finally { if (this.writes.get(peerId) === run) this.writes.delete(peerId) }
   }
   private async shared(): Promise<Map<string, string>> {
     const result = new Map<string, string>()

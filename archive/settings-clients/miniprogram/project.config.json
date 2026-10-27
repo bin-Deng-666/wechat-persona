@@ -1,0 +1,1 @@
+{"description":"帽兜设置原生微信小程序","compileType":"miniprogram","miniprogramRoot":"./","appid":"touristappid","projectname":"maodou-settings","setting":{"urlCheck":true,"es6":true,"enhance":true,"postcss":true,"minified":true},"libVersion":"3.9.0"}

@@ -1,0 +1,2 @@
+const api=require('../../utils/api')
+Page({data:{commands:[],questions:[],error:''},async onLoad(){try{const data=await api.request('/guide');this.setData({...data,questions:data.questions.map(q=>({...q,open:false}))})}catch(error){this.setData({error:error.message})}},toggle(e){const index=Number(e.currentTarget.dataset.index);this.setData({['questions['+index+'].open']:!this.data.questions[index].open})}})

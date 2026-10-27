@@ -1,0 +1,15 @@
+{
+  "name": "wechat-persona-settings-archive",
+  "private": true,
+  "type": "module",
+  "description": "已归档的网页设置与微信小程序；不参与主插件构建",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
+    "build": "tsdown --config tsdown.config.ts",
+    "check:miniapp": "node scripts/check-miniprogram.mjs",
+    "configure:miniapp": "node scripts/configure-miniprogram.mjs",
+    "settings": "node lib/settings.js",
+    "settings:install": "node lib/settings.js install"
+  }
+}

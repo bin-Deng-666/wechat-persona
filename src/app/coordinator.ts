@@ -2,14 +2,14 @@
  * wechat-persona — 微信里的「AI 联系人」通道（DSH 插件）。
  *
  * Coordinator 管理账号、通道生命周期和各业务服务的装配。
- * Cordis 注册在 plugin.ts，网页路由注册在 panel/register.ts。
+ * Cordis 注册在 plugin.ts；设置交互由 wechat/controls.ts 管理。
  *
  * @module wechat-persona
  */
 
 import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 import { watch, type FSWatcher } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -17,7 +17,6 @@ import type { Config as ConfigShape } from './config.ts'
 import { createApiClient } from '../ilink/api.ts'
 import type { LoginCredentials } from '../ilink/login-machine.ts'
 import { forgetAccount, loadAccount, saveAccount, type StoredAccount } from '../auth/credentials.ts'
-import { parsePersonaCard } from '../persona/card.ts'
 import { PersonaStore } from '../persona/store.ts'
 import { ChatSettingsStore } from '../chat/settings.ts'
 import { StickerLibrary } from '../stickers/library.ts'
@@ -39,9 +38,6 @@ import { PeerGenerations } from '../chat/generations.ts'
 import { Channel } from '../wechat/channel.ts'
 import { TypingIndicator } from '../wechat/typing.ts'
 import { createFileLogger, type FileLogger } from './logger.ts'
-import { LoginSession } from '../auth/session.ts'
-import type { ChatSummary, PanelStatus, PersonaSummary } from '../panel/routes.ts'
-import { renderQrSvg } from '../auth/qr.ts'
 
 import { name } from './identity.ts'
 
@@ -50,9 +46,6 @@ const CHANNEL_VERSION = '0.3.0-dev.0'
 
 /** 单个出站文件的上限：整份文件一次性读进内存，再大就会把进程拖垮。 */
 const MAX_SEND_FILE_BYTES = 100 * 1024 * 1024
-
-/** iLink 的登录基址；确认后服务端会给出后续 baseurl。 */
-const LOGIN_BASE_URL = 'https://ilinkai.weixin.qq.com'
 
 /** `ctx.agents` 的注册面。 */
 type AgentsLike = AgentRegistryLike
@@ -106,7 +99,6 @@ export class Coordinator {
   private prompts: PeerSystemPrompt | undefined
   private approvals: ApprovalBridge | undefined
   private starting = false
-  private readonly login: LoginSession
 
   constructor(ctx: Context, config: ConfigShape, dataDir: string) {
     this.ctx = ctx
@@ -129,17 +121,6 @@ export class Coordinator {
     this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
     this.memory = new PeerMemory(join(dataDir, 'memory'))
     this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
-    this.login = new LoginSession({
-      api: createApiClient({ channelVersion: CHANNEL_VERSION, botAgent: 'wechat-persona' }),
-      renderQr: renderQrSvg,
-      onConnected: async credentials => { await this.connect(credentials) },
-      report: this.report,
-    })
-  }
-
-  /** 记下面板地址（含密钥），日志里能直接抄。 */
-  announcePanel(url: string): void {
-    this.report(`配置页：${url}`)
   }
 
   /** 启动时打一行：证明插件被加载了、用的是哪个目录。 */
@@ -184,7 +165,6 @@ export class Coordinator {
       if (this.account !== undefined) {
         this.account = undefined
         await this.stopRun()
-        this.login.markExpired()
         this.report('账号文件已删除，通道已停止')
       }
       return
@@ -199,7 +179,7 @@ export class Coordinator {
   async connect(credentials: LoginCredentials): Promise<void> {
     this.account = await saveAccount(this.dataDir, {
       accountId: credentials.accountId,
-      baseUrl: credentials.baseUrl === LOGIN_BASE_URL ? credentials.baseUrl : credentials.baseUrl,
+      baseUrl: credentials.baseUrl,
       botToken: credentials.botToken,
       ...(credentials.userId === undefined ? {} : { userId: credentials.userId }),
     })
@@ -232,132 +212,11 @@ export class Coordinator {
     return answer === 'allow' ? 'allowed-once' : answer === 'deny' ? 'rejected' : 'cancelled'
   }
 
-  /** 退出登录：停轮询、删凭据、复位面板。 */
+  /** 退出登录：停止轮询并删除本地凭据。 */
   async logout(): Promise<void> {
     await this.stopRun()
     await forgetAccount(this.dataDir)
     this.account = undefined
-    this.login.reset()
-  }
-
-  /** 面板状态。 */
-  async status(): Promise<PanelStatus> {
-    return {
-      connected: this.account !== undefined && this.run !== undefined,
-      ...(this.account?.userId === undefined ? {} : { userId: this.account.userId }),
-      login: this.login.view(),
-      dataDir: this.dataDir,
-    }
-  }
-
-  /** 人格卡概览。 */
-  async personas(): Promise<PersonaSummary[]> {
-    const snapshot = await this.store.snapshot()
-    return [...snapshot.personas.values()].map(persona => ({
-      id: persona.card.id,
-      name: persona.card.name,
-      description: persona.card.description,
-      warnings: persona.warnings.map(warning => `${warning.path}: ${warning.message}`),
-    }))
-  }
-
-  /** 读一张人格卡的原始 JSON；文件不存在时给出可读的提示。 */
-  async readPersona(id: string): Promise<{ ok: boolean; raw?: string; error?: string }> {
-    try {
-      return { ok: true, raw: await readFile(this.personaFile(id), 'utf8') }
-    } catch {
-      return { ok: false, error: '这个 id 还没有人格卡' }
-    }
-  }
-
-  /**
-   * 写一张人格卡。
-   *
-   * 先校验再落盘：坏卡写进去会让这个角色从列表里消失（store 会把它标成 broken），
-   * 用户很难看出是自己刚才的编辑造成的。
-   */
-  async writePersona(id: string, raw: string): Promise<{ ok: boolean; issues: string[]; warnings: string[] }> {
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw) as unknown
-    } catch (error) {
-      return { ok: false, issues: [`JSON 解析失败：${error instanceof Error ? error.message : String(error)}`], warnings: [] }
-    }
-    const result = parsePersonaCard(parsed, id)
-    if (!result.ok) {
-      return { ok: false, issues: result.issues.map(issue => `${issue.path || '<root>'}: ${issue.message}`), warnings: [] }
-    }
-    const dir = join(this.dataDir, 'personas', id)
-    await mkdir(dir, { recursive: true })
-    const target = this.personaFile(id)
-    const temp = `${target}.${String(process.pid)}.tmp`
-    await writeFile(temp, JSON.stringify(parsed, null, 2), 'utf8')
-    await rename(temp, target)
-    return { ok: true, issues: [], warnings: result.warnings.map(warning => `${warning.path}: ${warning.message}`) }
-  }
-
-  private personaFile(id: string): string {
-    return join(this.dataDir, 'personas', id, 'persona.json')
-  }
-
-  /** 已知聊天（设置里出现过的 + 这次运行聊过的）。 */
-  async chats(): Promise<ChatSummary[]> {
-    const peers = new Set<string>(await this.chatSettings.listPeers())
-    for (const peer of this.run?.knownPeers() ?? []) peers.add(peer)
-    const out: ChatSummary[] = []
-    for (const peerId of peers) {
-      const settings = await this.chatSettings.get(peerId)
-      out.push({
-        peerId,
-        ...(settings.personaId === undefined ? {} : { personaId: settings.personaId }),
-        enabled: settings.enabled,
-      })
-    }
-    return out.sort((left, right) => left.peerId.localeCompare(right.peerId))
-  }
-
-  /** 改一个聊天的设置；只改传进来的字段。 */
-  async setChat(patch: { peerId: string; personaId?: string; enabled?: boolean }): Promise<ChatSummary> {
-    const current = await this.chatSettings.get(patch.peerId)
-    const next = {
-      ...current,
-      // 空字符串表示「跟随默认」，要真的把 personaId 去掉而不是存成空串。
-      ...(patch.personaId === undefined ? {} : patch.personaId === '' ? { personaId: undefined } : { personaId: patch.personaId }),
-      ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
-    }
-    const saved = await this.chatSettings.save(patch.peerId, next)
-    return {
-      peerId: patch.peerId,
-      ...(saved.personaId === undefined ? {} : { personaId: saved.personaId }),
-      enabled: saved.enabled,
-    }
-  }
-
-  /** 面板的动作集合。 */
-  panelHandlers(): {
-    status: () => Promise<PanelStatus>
-    begin: () => Promise<ReturnType<LoginSession['view']>>
-    poll: () => Promise<ReturnType<LoginSession['view']>>
-    verifyCode: (code: string) => Promise<ReturnType<LoginSession['view']>>
-    logout: () => Promise<ReturnType<LoginSession['view']>>
-    personas: () => Promise<PersonaSummary[]>
-    chats: () => Promise<ChatSummary[]>
-    setChat: (patch: { peerId: string; personaId?: string; enabled?: boolean }) => Promise<ChatSummary>
-    readPersona: (id: string) => Promise<{ ok: boolean; raw?: string; error?: string }>
-    writePersona: (id: string, raw: string) => Promise<{ ok: boolean; issues: string[]; warnings: string[] }>
-  } {
-    return {
-      status: async () => await this.status(),
-      begin: async () => await this.login.begin(),
-      poll: async () => await this.login.poll(),
-      verifyCode: code => Promise.resolve(this.login.submitVerifyCode(code)).then(() => this.login.poll()),
-      logout: async () => { await this.logout(); return this.login.view() },
-      personas: async () => await this.personas(),
-      chats: async () => await this.chats(),
-      setChat: async patch => await this.setChat(patch),
-      readPersona: async id => await this.readPersona(id),
-      writePersona: async (id, raw) => await this.writePersona(id, raw),
-    }
   }
 
   private async startRun(): Promise<void> {
@@ -473,7 +332,6 @@ export class Coordinator {
         permissionLabel: preset,
         activity: this.activity,
         memory: this.memory,
-        modelLabel: this.modelLabel(),
         cwd: this.config.cwd.get(),
         stickers: this.stickers,
         sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
@@ -481,11 +339,10 @@ export class Coordinator {
         replies,
         events: this.ctx as never,
         report: this.report,
-        // 服务端说 token 废了：清掉本地账号，页面回到「可以重新扫码」的状态。
+        // 服务端令牌失效时清除凭据，用户需重新运行终端登录。
         onSessionExpired: () => {
           this.account = undefined
           void forgetAccount(this.dataDir)
-          this.login.markExpired()
         },
         prepareMedia: this.mediaPreparer(),
         compact: async (peerId, generation, signal) => await compactPeer({
@@ -658,13 +515,6 @@ export class Coordinator {
       signal: context?.signal,
     })
     return true
-  }
-
-  /** 卡片上展示的模型名；拿不到就空串。 */
-  private modelLabel(): string {
-    const selection = this.modelSelection()
-    if (selection.model === undefined) return ''
-    return selection.model
   }
 
   private modelSelection(): { provider?: string; model?: string } {

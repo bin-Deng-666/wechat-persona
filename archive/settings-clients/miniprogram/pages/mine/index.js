@@ -1,0 +1,2 @@
+const api=require('../../utils/api')
+Page({data:{context:null,error:''},onShow(){this.reload()},async reload(){try{this.setData({context:await api.context(),error:''})}catch(error){this.setData({error:error.message})}},open(e){wx.navigateTo({url:'/pages/'+e.currentTarget.dataset.page+'/index'})},async logout(){if(!await api.confirm('退出当前设备？之后需要重新绑定。'))return;try{await api.request('/auth/logout',{});api.reset()}catch(error){this.setData({error:error.message})}}})

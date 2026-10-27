@@ -1,0 +1,2 @@
+const api=require('../../utils/api')
+Page({data:{code:'',busy:false,error:''},input(e){this.setData({code:e.detail.value.replace(/\D/g,'').slice(0,8),error:''})},async bind(){if(this.data.code.length!==8){this.setData({error:'请输入 8 位绑定码'});return}this.setData({busy:true,error:''});try{await api.bind(this.data.code);wx.switchTab({url:'/pages/chat/index'})}catch(error){this.setData({error:error.message})}finally{this.setData({busy:false})}}})

@@ -6,6 +6,9 @@
 |---|---|---|
 | `login.ts` | 首次登录、登录过期、换号 | 写 `~/.dsh/wechat-persona/account.json`（0600） |
 | `probe-login.ts` | 怀疑协议端点/请求头不对时 | 无（只取一张码、查一次状态，不写盘） |
+| `evaluate-conversation.ts` | 验证人格和多轮对话质量 | 按指定配置运行评测并输出结果 |
+
+网页服务和小程序脚本保存在 [../archive/settings-clients/](../archive/settings-clients/README.md)，不属于当前插件的安装或运行流程。
 
 ## 登录
 
