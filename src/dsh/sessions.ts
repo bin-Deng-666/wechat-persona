@@ -88,12 +88,15 @@ export interface AgentRegistryLike {
  */
 export type AgentSetupLike = (agentCtx: unknown, agent: unknown) => void | Promise<void>
 
+/** 一次会话路由选择；与宿主 `agentOptions` 同形。 */
+export interface ModelSelection { provider?: string; model?: string }
+
 export interface PeerSessionsOptions {
   registry: AgentRegistryLike
   /** 新建会话记录的工作目录（绝对路径，创建后不可改）。 */
   cwd: string
-  /** 本通道创建/恢复的会话统一使用的模型。 */
-  sessionOptions?: { provider?: string; model?: string }
+  /** 本通道创建/恢复的会话使用的模型；按联系人解析，缺省跟随宿主默认。 */
+  sessionOptions?: ModelSelection | ((peerId: string) => Promise<ModelSelection | undefined> | ModelSelection | undefined)
   /** 探测持久化会话是否已存在；缺省视为不存在。 */
   sessionExists?: (sessionId: SessionId) => Promise<boolean>
   /** 组合会话作用域世界（挂 preset、人设等），同时提供对应的微信联系人。 */
@@ -147,7 +150,10 @@ export class PeerSessions {
       return adopted
     }
 
-    const options = this.options.sessionOptions === undefined ? {} : { agentOptions: this.options.sessionOptions }
+    const selection = typeof this.options.sessionOptions === 'function'
+      ? await this.options.sessionOptions(peerId)
+      : this.options.sessionOptions
+    const options = selection === undefined ? {} : { agentOptions: selection }
     let handle: AgentHandleLike
     const setup = this.options.setup === undefined ? {} : {
       setup: async (agentCtx: unknown, agent: unknown) => { await this.options.setup!(agentCtx, agent, peerId) },

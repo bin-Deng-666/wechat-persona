@@ -47,7 +47,7 @@ it('中文入口、逐级返回与关闭都在微信内完成', async t => {
   assert.match(f.sent.at(-1)!.text, /^🎭 切换人格/)
   await f.send('返回')
   assert.match(f.sent.at(-1)!.text, /^⚙️ 聊天设置\n/)
-  await f.send('2')
+  await f.send('3')
   assert.match(f.sent.at(-1)!.text, /^📝 个人记忆/)
   await f.send('0')
   assert.match(f.sent.at(-1)!.text, /^⚙️ 聊天设置\n/)
@@ -98,12 +98,55 @@ it('菜单和帮助整条显示，沿用本条消息的回复令牌', async t =>
   await f.settings.update('owner', current => ({ ...current, maxChars: 20, split: 'sentence' }))
   await f.send('设置')
   assert.equal(f.sent.length, 1)
-  assert.match(f.sent[0]!.text, /1  换人格[\s\S]*5  压缩对话/)
+  assert.match(f.sent[0]!.text, /1  换人格[\s\S]*6  压缩对话/)
   assert.equal(f.sent[0]!.token, 'input-1')
   await f.send('帮助')
   assert.equal(f.sent.length, 2)
   assert.match(f.sent[1]!.text, /设置 ·[\s\S]*表情 发 名字/)
   assert.doesNotMatch(f.sent[1]!.text, /分条|网页|小程序/)
+})
+
+it('设置里可以平铺换模型，换完自动开新一段会话', async t => {
+  const catalog = async () => ({
+    choices: [
+      { provider: 'deepseek-account', model: 'deepseek-flash' },
+      { provider: 'workbuddy', model: 'glm-5.3' },
+    ],
+    current: { provider: 'deepseek-account', model: 'deepseek-flash' },
+  })
+  const f = await setup(t, { catalog })
+  await f.send('设置')
+  assert.match(f.sent.at(-1)!.text, /2  换模型 · deepseek-account\/deepseek-flash/)
+  await f.send('2')
+  assert.match(f.sent.at(-1)!.text, /🤖 换模型/)
+  assert.match(f.sent.at(-1)!.text, /1  deepseek-account\/deepseek-flash  ✓/)
+  assert.match(f.sent.at(-1)!.text, /2  workbuddy\/glm-5\.3/)
+  await f.send('2')
+  assert.deepEqual((await f.settings.get('owner')).model, { provider: 'workbuddy', model: 'glm-5.3' })
+  assert.match(f.sent.at(-1)!.text, /已换到 workbuddy\/glm-5\.3/)
+  assert.match(f.sent.at(-1)!.text, /第 2 段/)
+  assert.equal(await f.generations.get('owner'), 1)
+  await f.send('设置')
+  assert.match(f.sent.at(-1)!.text, /2  换模型 · workbuddy\/glm-5\.3/)
+})
+
+it('重复选中同一个模型只回一句，不重开会话', async t => {
+  const catalog = async () => ({ choices: [{ provider: 'workbuddy', model: 'glm-5.3' }], current: { provider: 'workbuddy', model: 'glm-5.3' } })
+  const f = await setup(t, { catalog })
+  await f.settings.update('owner', current => ({ ...current, model: { provider: 'workbuddy', model: 'glm-5.3' } }))
+  await f.send('设置')
+  await f.send('2')
+  await f.send('1')
+  assert.match(f.sent.at(-1)!.text, /现在用的就是 workbuddy\/glm-5\.3/)
+  assert.equal(await f.generations.get('owner'), 0)
+})
+
+it('没有模型目录时设置里仍可打开，但只给出说明', async t => {
+  const f = await setup(t)
+  await f.send('设置')
+  await f.send('2')
+  assert.match(f.sent.at(-1)!.text, /还没有可用的模型/)
+  assert.match(f.sent.at(-1)!.text, /当前：跟随 DSH 默认/)
 })
 
 it('分条不再作为触发指令，也不会修改聊天设置', async t => {
@@ -127,7 +170,7 @@ it('菜单发起的压缩使用当前代次，并能接收中文停止', { timeo
   } })
   await f.send('新对话')
   await f.send('设置')
-  const pending = f.channel.handle({ message_id: 'compact', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: '5' } }] })
+  const pending = f.channel.handle({ message_id: 'compact', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: '6' } }] })
   await ready
   assert.equal(generation, 1)
   await f.channel.handle({ message_id: 'stop', from_user_id: 'owner', message_type: 1, item_list: [{ type: 1, text_item: { text: '停止' } }] })

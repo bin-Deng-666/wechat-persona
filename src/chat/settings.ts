@@ -7,6 +7,8 @@ import { withFileLock } from '../storage/lock.ts'
 
 export interface ChatSettings {
   personaId?: string
+  /** 这个聊天选定的模型；缺省时跟随宿主的默认选择。 */
+  model?: { provider: string; model: string }
   enabled: boolean
   /** 兼容已保存的发送参数；当前菜单不提供这些设置。 */
   maxChars?: number
@@ -15,6 +17,8 @@ export interface ChatSettings {
 
 export const DEFAULT_CHAT_SETTINGS: ChatSettings = { enabled: true }
 const MAX_CHARS_RANGE = { min: 20, max: 4_096 } as const
+/** provider / model 的合法形状：宿主用它们做注册表键，不接受空白与斜杠。 */
+const PROVIDER_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/u
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -25,6 +29,14 @@ export function parseChatSettings(raw: unknown): ChatSettings {
   const settings: ChatSettings = { ...DEFAULT_CHAT_SETTINGS }
   if (typeof raw['personaId'] === 'string' && raw['personaId'].trim() !== '') settings.personaId = raw['personaId'].trim()
   if (typeof raw['enabled'] === 'boolean') settings.enabled = raw['enabled']
+  const model = raw['model']
+  if (isRecord(model)) {
+    const provider = model['provider'], name = model['model']
+    // 只收干净的 id：这两个值会拼进选中器文案，也会传给宿主。
+    if (typeof provider === 'string' && PROVIDER_PATTERN.test(provider.trim()) && typeof name === 'string' && PROVIDER_PATTERN.test(name.trim())) {
+      settings.model = { provider: provider.trim(), model: name.trim() }
+    }
+  }
   const maxChars = raw['maxChars']
   if (typeof maxChars === 'number' && Number.isFinite(maxChars)) {
     settings.maxChars = Math.round(Math.min(MAX_CHARS_RANGE.max, Math.max(MAX_CHARS_RANGE.min, maxChars)))

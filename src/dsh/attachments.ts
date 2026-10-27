@@ -11,7 +11,7 @@ export interface AttachmentStoreLike {
 export interface PrepareMediaOptions {
   store?: AttachmentStoreLike
   download?: (media: InboundMedia, signal?: AbortSignal) => Promise<Uint8Array>
-  supportsImage?: () => Promise<boolean>
+  supportsImage?: (peerId?: string) => Promise<boolean>
   report?: (line: string, detail?: unknown) => void
   onImage?: (input: { data: Uint8Array; mediaType: string; peerId?: string }) => Promise<string | void> | string | void
 }
@@ -23,13 +23,23 @@ export function createMediaPreparer(options: PrepareMediaOptions): (items: reado
   return async (items, peerId, signal) => {
     signal?.throwIfAborted()
     const media = extractMedia(items), parts: unknown[] = [], notes: string[] = []
-    let supportsImages: boolean | undefined
+    // 每个联系人可能选了不同的模型，图片能力要按人选。
+    const imageSupport = new Map<string, boolean>()
     async function canSeeImages(): Promise<boolean> {
-      if (supportsImages !== undefined) return supportsImages
-      try { supportsImages = await options.supportsImage?.() ?? false }
-      catch (error) { options.report?.('探测图片支持失败', { error: String(error) }); supportsImages = false }
-      signal?.throwIfAborted()
-      return supportsImages
+      const key = peerId ?? ''
+      const known = imageSupport.get(key)
+      if (known !== undefined) return known
+      try {
+        const supported = await options.supportsImage?.(peerId) ?? false
+        imageSupport.set(key, supported)
+        return supported
+      } catch (error) {
+        options.report?.('探测图片支持失败', { error: String(error) })
+        imageSupport.set(key, false)
+        return false
+      } finally {
+        signal?.throwIfAborted()
+      }
     }
     for (const item of media) {
       signal?.throwIfAborted()

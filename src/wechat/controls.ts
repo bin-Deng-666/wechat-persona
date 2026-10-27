@@ -7,13 +7,21 @@ import type { PeerGenerations } from '../chat/generations.ts'
 import type { PeerMemory } from '../memory/store.ts'
 import type { StickerLibrary } from '../stickers/library.ts'
 import { normalizeStickerName } from '../stickers/markers.ts'
-import { MENU_TTL_MS, parseChoice, renderMenu, resolveChoice, type MenuPanel, type MenuView } from './menu.ts'
-import { formatAgo, formatCompact, formatHelp, formatNewChat, formatPersona, formatStatus, formatUnknown } from './commands.ts'
+import { MENU_TTL_MS, modelLabelOf, parseChoice, renderMenu, resolveChoice, type MenuPanel, type ModelChoice, type MenuView } from './menu.ts'
+import { formatAgo, formatCompact, formatHelp, formatModelSwitch, formatNewChat, formatPersona, formatStatus, formatUnknown } from './commands.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
+
+/** 宿主模型目录：顺序与 DSH 选择器一致，`current` 是宿主的默认选择。 */
+export interface ModelCatalog {
+  choices: readonly ModelChoice[]
+  current?: ModelChoice
+}
 
 export interface ChatControlsOptions {
   personas: PersonaStore
   defaultPersona: string
+  /** 宿主当前的模型目录；缺失时菜单不提供换模型。 */
+  catalog?: () => Promise<ModelCatalog | undefined>
   settings?: ChatSettingsStore
   generations?: PeerGenerations
   permissionLabel?: string
@@ -101,6 +109,12 @@ export class ChatControls {
 
     const settings = this.options.settings
 
+    const modelPicked = /^model-(\d+)$/u.exec(resolved.action)
+    if (modelPicked !== null) {
+      await this.applyModel(peerId, Number(modelPicked[1]), contextToken)
+      return
+    }
+
     switch (resolved.action) {
       case 'new-chat': {
         if (this.options.generations === undefined) {
@@ -137,6 +151,31 @@ export class ChatControls {
     await this.openMenu(peerId, panel, contextToken)
   }
 
+  /** 平铺目录里的第 n 个模型；`provider/model` 原样交给宿主。 */
+  private async applyModel(peerId: string, index: number, contextToken: string | undefined): Promise<void> {
+    const catalog = await this.options.catalog?.()
+    const picked = catalog?.choices[index]
+    const settings = this.options.settings
+    if (picked === undefined || settings === undefined) {
+      await this.openMenu(peerId, 'models', contextToken)
+      return
+    }
+    const label = modelLabelOf(picked)
+    const current = await this.settingsFor(peerId)
+    if (current.model !== undefined && modelLabelOf(current.model) === label) {
+      await this.answer(peerId, `现在用的就是 ${label}\n继续聊就行。`, contextToken)
+      return
+    }
+    await settings.update(peerId, latest => ({ ...latest, model: picked }))
+    // 模型是在建会话时定下的：换了模型就要换一段会话，新选择才会生效。
+    if (this.options.generations === undefined) {
+      await this.answer(peerId, formatModelSwitch(label), contextToken)
+      return
+    }
+    const next = await this.options.newConversation(peerId)
+    await this.answer(peerId, formatModelSwitch(label, next), contextToken)
+  }
+
   /** 组装菜单展示所需的当前状态。 */
   private async menuView(peerId: string): Promise<MenuView> {
     const snapshot = await this.ensureSnapshot()
@@ -145,6 +184,8 @@ export class ChatControls {
     const names = await this.options.stickers?.names(peerId) ?? []
     const memories = this.options.memory?.get(peerId) ?? []
     const legacy = this.options.memory?.legacy(peerId) ?? []
+    const catalog = await this.options.catalog?.()
+    const current = settings.model ?? catalog?.current
     return {
       personaId: card.id,
       personaName: card.name,
@@ -153,6 +194,8 @@ export class ChatControls {
       memoryFacts: [...memories.map(memory => `[${memory.type}] ${memory.content}`), ...legacy.map(text => `[旧版未核实] ${text}`)],
       stickerCount: names.length,
       stickerNames: names,
+      modelChoices: catalog?.choices ?? [],
+      modelLabel: current === undefined ? '跟随 DSH 默认' : modelLabelOf(current),
     }
   }
 

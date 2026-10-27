@@ -143,6 +143,16 @@ export function formatNewChat(generation: number): string {
 }
 
 /**
+ * 换模型的回复。
+ * @param label - `provider/model`。
+ * @param generation - 传了就说明同时开了新对话（模型在建会话时定下）。
+ */
+export function formatModelSwitch(label: string, generation?: number): string {
+  if (generation === undefined) return `✓ 已换到 ${label}\n下一条消息就会用这个模型。`
+  return `✓ 已换到 ${label}\n换模型要重新开一段会话，现在是第 ${String(generation + 1)} 段。\n之前的记录还在，不会带进这段对话。`
+}
+
+/**
  * 「压缩」的回复。
  * @param outcome - 压缩结论。
  */

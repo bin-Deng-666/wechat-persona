@@ -12,6 +12,7 @@ import { PeerConversation, type ConversationActivity } from '../chat/conversatio
 import { DEFAULT_REPLY_PLAN, resolvePlan, type ReplyPlan } from '../reply/bubbles.ts'
 import { expandLocationTokens } from '../text/location.ts'
 import { ChatControls } from './controls.ts'
+import type { ModelCatalog } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
 import type { ReplyQueue, DeliveryReport } from '../reply/queue.ts'
@@ -47,6 +48,8 @@ export interface ChannelOptions {
   maxBackoffMs?: number
   now?: () => number
   settings?: ChatSettingsStore
+  /** 宿主模型目录；缺失时设置菜单不提供换模型。 */
+  catalog?: () => Promise<ModelCatalog | undefined>
   generations?: PeerGenerations
   compact?: (peerId: string, generation: number, signal?: AbortSignal) => Promise<CompactOutcome>
   /** 一轮结束时把会话 id 交给宿主（用于归入工作区）；缺失表示不需要。 */

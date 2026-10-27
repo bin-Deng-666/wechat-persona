@@ -71,6 +71,9 @@ interface AgentPresetsLike {
 /** `ctx.llm` 里我们用到的部分。 */
 interface LlmLike {
   resolveModelInfo: (provider: string, model: string) => Promise<{ inputModalities?: readonly string[] } | undefined>
+  /** 宿主当前的提供方列表，顺序与 DSH 模型选择器一致。 */
+  listProviders?: () => readonly { id: string; name?: string }[]
+  listModels?: (provider: string) => Promise<readonly { id: string; name?: string }[]>
 }
 
 interface ModelDefaultsLike {
@@ -268,7 +271,7 @@ export class Coordinator {
       const sessions = new PeerSessions({
         registry,
         cwd: this.config.cwd.get(),
-        sessionOptions: this.modelSelection(),
+        sessionOptions: async peerId => await this.selectionFor(peerId),
         sessionExists: async id => await this.sessionExists(id),
         onError: error => { this.report('会话释放失败', { error: String(error) }) },
         // 每个会话单独记权限：只影响这个通道造的会话，不动 profile 的全局默认。
@@ -329,6 +332,7 @@ export class Coordinator {
         defaultPersona: this.config.defaultPersona.get(),
         settings: this.chatSettings,
         generations: this.generations,
+        catalog: async () => await this.modelCatalog(),
         permissionLabel: preset,
         activity: this.activity,
         memory: this.memory,
@@ -425,12 +429,13 @@ export class Coordinator {
   /** 媒体处理不依赖视觉能力：原件总是先保存，视觉输入按宿主/模型能力决定。 */
   private mediaPreparer(): (items: readonly MessageItem[], peerId?: string) => Promise<PreparedMedia> {
     const store = this.ctx.get('attachments') as AttachmentStoreLike | undefined
-    const selection = this.modelSelection()
     return createMediaPreparer({
       store,
-      supportsImage: async () => {
+      supportsImage: async peerId => {
         const llm = this.ctx.get('llm') as LlmLike | undefined
         if (llm === undefined) return false
+        // 每个联系人可能选了不同的模型，图片能力跟着那个模型。
+        const selection = peerId === undefined ? this.modelSelection() : await this.selectionFor(peerId)
         try {
           const info = await llm.resolveModelInfo(selection.provider ?? '', selection.model ?? '')
           return info?.inputModalities?.includes('image') ?? false
@@ -525,6 +530,36 @@ export class Coordinator {
       return { provider: selection.provider, model: selection.model }
     } catch {
       return {}
+    }
+  }
+
+  /** 这个聊天用哪个模型：联系人自己选过的优先，否则跟随宿主默认。 */
+  private async selectionFor(peerId: string): Promise<{ provider?: string; model?: string }> {
+    try {
+      const settings = await this.chatSettings.get(peerId)
+      if (settings.model !== undefined) return { provider: settings.model.provider, model: settings.model.model }
+    } catch (error) {
+      this.report('读取联系人模型设置失败，沿用宿主默认', { error: String(error) })
+    }
+    return this.modelSelection()
+  }
+
+  /** 平铺的模型目录：直接读宿主的 llm 服务，顺序与 DSH 选择器相同。 */
+  private async modelCatalog(): Promise<{ choices: readonly { provider: string; model: string }[]; current?: { provider: string; model: string } } | undefined> {
+    const llm = this.ctx.get('llm') as LlmLike | undefined
+    if (llm?.listProviders === undefined || llm.listModels === undefined) return undefined
+    const choices: { provider: string; model: string }[] = []
+    for (const provider of llm.listProviders()) {
+      try {
+        for (const model of await llm.listModels(provider.id)) choices.push({ provider: provider.id, model: model.id })
+      } catch (error) {
+        this.report('模型目录读取失败', { provider: provider.id, error: String(error) })
+      }
+    }
+    const selection = this.modelSelection()
+    return {
+      choices,
+      ...(selection.provider === undefined || selection.model === undefined ? {} : { current: { provider: selection.provider, model: selection.model } }),
     }
   }
 
