@@ -31,7 +31,7 @@ export function renderPage(publicPrefix: string): string {
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>微信 Bot · 设置</title>
-<meta name="theme-color" content="#18181b"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="帽兜设置">
+<meta name="theme-color" content="#18181b"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="设置">
 <link rel="manifest" href="${publicPrefix}/manifest.webmanifest"><link rel="apple-touch-icon" href="${publicPrefix}/apple-touch-icon.png">
 <script>try { document.documentElement.dataset.theme = localStorage.getItem('settings-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') } catch {}</script>
 <style>${panelStyles}</style>
@@ -44,7 +44,7 @@ export function renderPage(publicPrefix: string): string {
     <details class="more-menu" id="pageMore"><summary aria-label="更多操作" title="更多操作">${icon('more')}</summary><div class="menu-popover"><button class="ghost" id="installApp">添加到桌面</button><button class="ghost" id="devicesOpen">登录设备</button><button class="ghost" id="export">${icon('download')}导出当前设置</button><button class="ghost danger" id="browserLogout">退出网页登录</button></div></details>
   </div>
 </div></header>
-<section class="sign-in card" id="signIn" hidden><div class="card-body"><h2>登录帽兜设置</h2><p class="muted" style="margin:10px 0 22px">首次绑定一次，之后直接打开。</p><form id="signInForm"><label class="field"><span>一次性登录 / 绑定码</span><input id="signInCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required placeholder="8 位验证码"></label><button class="primary" type="submit">登录并记住此设备</button><p class="hint" style="margin-top:16px">在微信向 bot 发送“设置”获取绑定码。Bot 离线时，可在电脑运行设置服务的 pair 命令获取。</p></form></div></section>
+<section class="sign-in card" id="signIn" hidden><div class="card-body"><h2>登录设置</h2><p class="muted" style="margin:10px 0 22px">首次绑定一次，之后直接打开。</p><form id="signInForm"><label class="field"><span>一次性登录 / 绑定码</span><input id="signInCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" required placeholder="8 位验证码"></label><button class="primary" type="submit">登录并记住此设备</button><p class="hint" style="margin-top:16px">在微信向 bot 发送“设置”获取绑定码。Bot 离线时，可在电脑运行设置服务的 pair 命令获取。</p></form></div></section>
 <div class="layout" id="appContent" hidden>
   <aside class="sidebar"><div class="nav-caption">偏好设置</div><nav aria-label="设置分类">
     ${nav('chat','聊天')}${nav('memory','记忆')}${nav('stickers','表情库')}${nav('personas','人格',true)}

@@ -78,6 +78,6 @@ async function main() {
     if (result.status !== 0) throw new Error(result.stderr.trim() || '服务未安装')
     console.log('后台服务已停止。设置与登录设备数据已保留。'); return
   }
-  console.log('帽兜设置服务\n\nserve       独立运行\ninstall     安装 macOS 登录后台服务\nopen        登录并打开固定入口\npair        生成一次性绑定码\nurl         查看固定入口\nconfigure   设置端口或 HTTPS 公网域名\nuninstall   停止后台服务\n\n选项：--data-dir <目录> --port <端口> --bind 127.0.0.1|0.0.0.0 --public-url https://域名 --shortcut <桌面.webloc>')
+  console.log('设置服务\n\nserve       独立运行\ninstall     安装 macOS 登录后台服务\nopen        登录并打开固定入口\npair        生成一次性绑定码\nurl         查看固定入口\nconfigure   设置端口或 HTTPS 公网域名\nuninstall   停止后台服务\n\n选项：--data-dir <目录> --port <端口> --bind 127.0.0.1|0.0.0.0 --public-url https://域名 --shortcut <桌面.webloc>')
 }
 void main().catch(error => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1 })

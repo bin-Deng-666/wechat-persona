@@ -16,6 +16,9 @@ Versions before `0.2.0` are development builds and were never published.
 - Conversation evaluation accepts `--persona` and `--cases` for actual cards.
 - 微信设置菜单：五个常用操作，支持中文分类入口、返回、关闭和清空记忆前确认；
   “帮助”直接回复完整中文指令与表情用法。
+- 单文件产品介绍页 `docs/introduction.html`：首屏四张微信实机截图（可放大）、功能、
+  中文指令、安装步骤与常见问题；零外部依赖，支持明暗主题与手机布局，可离线打开。
+- 仓库清理：移除文档、测试与归档中的私人称呼和本机路径，归档小程序使用通用名称。
 
 ### Changed
 
@@ -33,6 +36,9 @@ Versions before `0.2.0` are development builds and were never published.
 
 ### Fixed
 
+- 聊天设置目录改为联系人哈希。旧目录把 `%` 换成 `_`，含 `/`、`%` 等字符的 peer 会落到同一
+  目录，可能读到或覆盖别人的设置；现在旧目录只在文档内 `peerId` 与联系人一致时读取，
+  新写入落到哈希目录，旧文件保留供核对。设置文档损坏时报错并保留原件，不再静默回落默认值。
 - 出站媒体的 `aes_key` 统一为「先写 32 位 hex 字符串、再对该字符串做 base64」。图片此前误用
   了 16 字节原样的 base64，收件人解不开密钥，微信里表现为「图片已过期」。图片、文件、视频
   现在共用同一种编码。

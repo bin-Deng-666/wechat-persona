@@ -1,5 +1,5 @@
 const config = require('../config')
-const TOKEN_KEY = 'maodou_settings_device'
+const TOKEN_KEY = 'wechat_persona_settings_device'
 let redirecting = false
 const imageCache = new Map()
 function base() {

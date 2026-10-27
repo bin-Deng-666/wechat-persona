@@ -5,7 +5,7 @@ import { parseChoice, renderMenu, resolveChoice, type MenuView } from '../../src
 const view: MenuView = {
   personaId: 'default', personaName: '小助手',
   personaChoices: [{ id: 'default', name: '小助手' }, { id: 'chatty', name: '话痨' }],
-  memoryCount: 3, memoryFacts: ['用户叫阿彬', '做前端', '住杭州'],
+  memoryCount: 3, memoryFacts: ['沟通偏好：先给结论', '常用语言：中文', '所在时区：东八区'],
   stickerCount: 4, stickerNames: ['开心', '无语', '困了', '比心'],
 }
 

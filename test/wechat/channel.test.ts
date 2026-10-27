@@ -702,7 +702,7 @@ describe('记忆标记', () => {
     await channel.handle(userMessage({ message_id: 'm1' }))
     emit('channel-persona-wxid-owner', {
       type: 'assistant/message',
-      data: { message: { content: [{ type: 'text', text: '记下了。[记住: 用户叫阿彬]' }] } },
+      data: { message: { content: [{ type: 'text', text: '记下了。[记住: 用户偏好简洁回答]' }] } },
     })
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.deepEqual(sent, ['记下了。'])

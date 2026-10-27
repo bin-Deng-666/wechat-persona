@@ -10,7 +10,7 @@
 
 ```bash
 npm run build
-npm run settings:install -- --shortcut "$HOME/Desktop/帽兜设置.webloc"
+npm run settings:install -- --shortcut "$HOME/Desktop/设置.webloc"
 npm run settings -- open
 ```
 

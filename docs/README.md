@@ -34,5 +34,5 @@
 
 1. `~/.dsh/wechat-persona/logs/plugin-*.log` —— 加载、轮询、发送失败都在这
 2. `node --experimental-strip-types scripts/probe-login.ts` —— 协议连通性，不写凭据
-3. `zstd -dc ~/.dsh/sessions/--Users-dengbin--/channel-persona-*/session.v4.jsonl.zstd`
+3. `zstd -dc ~/.dsh/sessions/<工作区目录>/channel-persona-*/session.v4.jsonl.zstd`
    —— 会话里到底发生了什么（工具调用、回复、错误）

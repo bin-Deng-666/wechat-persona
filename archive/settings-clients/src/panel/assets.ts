@@ -19,7 +19,7 @@ function iconPng(): Buffer {
 }
 export function appAsset(path: string): Response | undefined {
   if (path === '/manifest.webmanifest') return Response.json({
-    id:PUBLIC_PREFIX + '/',name:'帽兜设置',short_name:'帽兜设置',lang:'zh-CN',start_url:PUBLIC_PATH,scope:PUBLIC_PREFIX + '/',display:'standalone',background_color:'#f7f7f8',theme_color:'#18181b',
+    id:PUBLIC_PREFIX + '/',name:'设置',short_name:'设置',lang:'zh-CN',start_url:PUBLIC_PATH,scope:PUBLIC_PREFIX + '/',display:'standalone',background_color:'#f7f7f8',theme_color:'#18181b',
     icons:[{src:PUBLIC_PREFIX + '/icon.svg',sizes:'any',type:'image/svg+xml',purpose:'any maskable'},{src:PUBLIC_PREFIX + '/apple-touch-icon.png',sizes:'192x192',type:'image/png'}],
   },{headers:{'Content-Type':'application/manifest+json; charset=utf-8'}})
   if (path === '/icon.svg') return new Response(appIcon,{headers:{'Content-Type':'image/svg+xml'}})
@@ -29,7 +29,7 @@ self.addEventListener('install',()=>self.skipWaiting());
 self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
 self.addEventListener('fetch',event=>{
   if(event.request.mode!=='navigate') return;
-  event.respondWith(fetch(event.request).catch(()=>new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>帽兜设置</title><body style="font:16px/1.7 system-ui;padding:32px"><h2>暂时连接不上设置服务</h2><p>请检查网络和运行服务的设备，再刷新页面。</p><button onclick="location.reload()">重新连接</button></body></html>',{headers:{'Content-Type':'text/html; charset=utf-8'}})));
+  event.respondWith(fetch(event.request).catch(()=>new Response('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>设置</title><body style="font:16px/1.7 system-ui;padding:32px"><h2>暂时连接不上设置服务</h2><p>请检查网络和运行服务的设备，再刷新页面。</p><button onclick="location.reload()">重新连接</button></body></html>',{headers:{'Content-Type':'text/html; charset=utf-8'}})));
 });`,{headers:{'Content-Type':'text/javascript; charset=utf-8','Service-Worker-Allowed':PUBLIC_PREFIX + '/'}})
   return undefined
 }

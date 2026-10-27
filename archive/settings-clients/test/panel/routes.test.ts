@@ -38,7 +38,7 @@ function handlers(overrides: Partial<Parameters<typeof createPanel>[0]> = {}) {
     clearMemory: async (peerId: string) => { calls.push(`clearMemory:${peerId}`); return { ok: true } },
     stickers: async (peerId: string) => {
       calls.push(`stickers:${peerId}`)
-      return { images: [{ id: 's_1', status: 'ready' as const, mediaType: 'image/png', bytes: 3, lastReceivedAt: '2026-10-26T00:00:00.000Z', name: '开心' }], shared: [{ name: '帽兜娃娃' }] }
+      return { images: [{ id: 's_1', status: 'ready' as const, mediaType: 'image/png', bytes: 3, lastReceivedAt: '2026-10-26T00:00:00.000Z', name: '开心' }], shared: [{ name: '示例表情' }] }
     },
     stickerImage: async (input: { peerId: string; id: string }) => {
       calls.push(`stickerImage:${input.id}`)
@@ -181,7 +181,7 @@ describe('panel routes', () => {
     const panel = createPanel(h)
     assert.equal((await panel.stickers(new Request('http://local/x'))).status, 400)
     const ok = await panel.stickers(new Request('http://local/x?peerId=wxid-1'))
-    assert.deepEqual(await ok.json(), { images: [{ id: 's_1', status: 'ready', mediaType: 'image/png', bytes: 3, lastReceivedAt: '2026-10-26T00:00:00.000Z', name: '开心' }], shared: [{ name: '帽兜娃娃' }] })
+    assert.deepEqual(await ok.json(), { images: [{ id: 's_1', status: 'ready', mediaType: 'image/png', bytes: 3, lastReceivedAt: '2026-10-26T00:00:00.000Z', name: '开心' }], shared: [{ name: '示例表情' }] })
   })
 
   it('sticker/image 直接返回图片字节与类型，找不到时 404', async () => {
