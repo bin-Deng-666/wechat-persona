@@ -584,33 +584,24 @@ describe('连发合并与失败反馈', () => {
     assert.ok(sent.some(item => item.text.includes('长度上限')))
   })
 
-  it('没有「在做什么」的信息时，不再发一句固定台词', async () => {
-    const { channel, sent } = setup({ progressAfterMs: 50 })
-    await channel.handle(userMessage())
-    await new Promise(resolve => setTimeout(resolve, 150))
-    assert.deepEqual(sent, [])
-  })
-
-  it('有模型旁白时，用它的原话当进度提示', async () => {
+  it('等待期间不主动产出内容，只在正文到达时说话', async () => {
     const { channel, sent, emit } = setup({ progressAfterMs: 50 })
     await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    // 只跑工具、不说话：中间不产出任何消息。
     emit('channel-persona-wxid-owner', {
       type: 'assistant/message',
-      data: { message: { content: [{ type: 'text', text: '我先看一下日志' }, { type: 'tool-call', name: 'bash' }] } },
+      data: { turn: 1, message: { content: [{ type: 'tool-call', name: 'bash' }] } },
     })
     await new Promise(resolve => setTimeout(resolve, 150))
-    assert.deepEqual(sent.map(item => item.text), ['我先看一下日志'])
-  })
-
-  it('只有工具名时，按正在跑的工具说一句', async () => {
-    const { channel, sent, emit } = setup({ progressAfterMs: 50 })
-    await channel.handle(userMessage())
+    assert.equal(sent.length, 0)
+    // 正文到达后才有一条。
     emit('channel-persona-wxid-owner', {
       type: 'assistant/message',
-      data: { message: { content: [{ type: 'tool-call', name: 'bash' }] } },
+      data: { turn: 1, message: { content: [{ type: 'text', text: '做完了。' }] } },
     })
-    await new Promise(resolve => setTimeout(resolve, 150))
-    assert.deepEqual(sent.map(item => item.text), ['还在跑命令，稍等一下。'])
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.deepEqual(sent.map(item => item.text), ['做完了。'])
   })
 
   it('正常结束时不多嘴', async () => {
@@ -707,5 +698,127 @@ describe('记忆标记', () => {
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.deepEqual(sent, ['记下了。'])
     assert.deepEqual(remembered, [])
+  })
+})
+
+describe('卡住与连续入站', () => {
+  function setup(options: { mergeWindowMs?: number; progressAfterMs?: number; stallAfterMs?: number; now?: () => number } = {}) {
+    const { sessions, delivered } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: { peerId: string; text: string; token: string | undefined }[] = []
+    const reports: { line: string; detail?: unknown }[] = []
+    const replies = new ReplyQueue({ send: async (peerId, text, token) => { sent.push({ peerId, text, token }) }, sleep: async () => {} })
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore('/nonexistent'),
+      defaultPersona: 'default',
+      replies,
+      events,
+      report: (line, detail) => { reports.push({ line, detail }) },
+      sleep: async () => {},
+      mergeWindowMs: options.mergeWindowMs ?? 0,
+      progressAfterMs: options.progressAfterMs ?? 0,
+      stallAfterMs: options.stallAfterMs ?? 0,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    })
+    return { channel, delivered, sent, emit, reports }
+  }
+
+  it('单条长耗时：过程中保持沉默，正文到达后只发一次', async () => {
+    const { channel, sent, emit } = setup({ progressAfterMs: 30 })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    // 连续多个工具步骤，中间不产出任何内容。
+    for (let step = 0; step < 3; step += 1) {
+      emit('channel-persona-wxid-owner', {
+        type: 'assistant/message',
+        data: { turn: 1, message: { content: [{ type: 'tool-call', name: 'bash' }] } },
+      })
+    }
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.equal(sent.length, 0, `等待期间不该有输出：${JSON.stringify(sent.map((item: { text: string }) => item.text))}`)
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: '跑完了，结果是这样。' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 60))
+    assert.deepEqual(sent.map(item => item.text), ['跑完了，结果是这样。'])
+  })
+
+  it('连着发几条：第二轮正文不会被当成过期内容丢掉', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage({ message_id: 'a', item_list: [{ type: 1, text_item: { text: '看看日志' } }] }))
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: '第一轮的回答。' }] } },
+    })
+    // 用户在模型还没收工时又发了一条。
+    await channel.handle(userMessage({ message_id: 'b', item_list: [{ type: 1, text_item: { text: '怎么样了' } }] }))
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 2 } })
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 2, message: { content: [{ type: 'text', text: '第二轮的回答。' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const texts = sent.map(item => item.text)
+    assert.ok(texts.some(text => text.includes('第一轮的回答')), JSON.stringify(texts))
+    assert.ok(texts.some(text => text.includes('第二轮的回答')), `第二轮被丢掉了：${JSON.stringify(texts)}`)
+  })
+
+  it('回合结束时清空待认领集合，不靠额外的 user/message', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage({ message_id: 'a' }))
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    // 第二条在运行中到达，进入待认领。
+    await channel.handle(userMessage({ message_id: 'b', item_list: [{ type: 1, text_item: { text: '再加一句' } }] }))
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 2 } })
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 2, message: { content: [{ type: 'text', text: '这一轮有内容。' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.ok(sent.some(item => item.text.includes('这一轮有内容')), JSON.stringify(sent))
+  })
+
+  it('交给宿主后一直没有开轮，会主动说一声而不是无声挂着', async () => {
+    const { channel, sent } = setup({ stallAfterMs: 40 })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 90))
+    assert.ok(sent.some(item => item.text.includes('还没轮到模型处理')), JSON.stringify(sent))
+  })
+
+  it('开轮之后卡住，措辞是「跑得比较久」而不是「排了很久」', async () => {
+    const { channel, sent, emit } = setup({ stallAfterMs: 40 })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    await new Promise(resolve => setTimeout(resolve, 90))
+    // 开轮即解除「排队」计时；这里验证的是不会误报排队文案。
+    assert.deepEqual(sent.filter(item => item.text.includes('还没轮到模型处理')), [])
+  })
+
+  it('分段计时写进日志，能算出排队与首字耗时', async () => {
+    let clock = 1_000
+    const { channel, emit, reports } = setup({ now: () => clock })
+    await channel.handle(userMessage())
+    clock = 1_400
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    clock = 3_400
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 1, message: { content: [{ type: 'text', text: '好了' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const legs = reports.filter(item => item.line.startsWith('时序'))
+    assert.ok(legs.some(item => item.line === '时序 submitted'), JSON.stringify(legs))
+    assert.ok(legs.some(item => item.line === '时序 turn-start'), JSON.stringify(legs))
+    assert.ok(legs.some(item => item.line === '时序 first-text'), JSON.stringify(legs))
+    const firstText = legs.find(item => item.line === '时序 first-text')
+    assert.equal((firstText?.detail as { sinceReceived?: number } | undefined)?.sinceReceived, 2_400)
   })
 })

@@ -20,8 +20,7 @@ wechat-persona/
 │   │   ├── menu.ts              菜单视图、编号解析、选项到动作的映射
 │   │   ├── controls.ts          菜单会话、有效期、命令与动作执行
 │   │   ├── access.ts            联系人准入
-│   │   ├── typing.ts            输入状态
-│   │   └── progress.ts          长任务进度文案
+│   │   └── typing.ts            输入状态
 │   ├── auth/
 │   │   ├── credentials.ts       登录凭据读写
 │   │   └── png.ts               终端二维码 PNG 编码
