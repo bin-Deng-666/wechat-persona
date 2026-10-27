@@ -96,7 +96,7 @@ conversations/<账号hash>/<联系人hash>.json
 memories.json                  旧版文件保留；无来源内容不自动成为可信个人事实
 logs/plugin-YYYY-MM-DD.log      诊断日志
 personas/<id>/persona.json      人格卡，见 docs/persona.md
-chats/<peer>/settings.json      人格、启用状态、长度、分条设置
+chats/<联系人hash>/settings.json 人格与启用状态
 stickers/
 ├── shared/<名字>.png|gif        人工导入的共享表情
 ├── assets/<hash前两位>/<完整hash>.gif|png|jpg|webp

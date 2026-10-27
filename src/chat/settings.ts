@@ -1,159 +1,129 @@
-/**
- * 每个聊天自己的设置。
- *
- * 放在 `data/chats/<peerId>/settings.json`：清楚、可手改、可单独备份。
- * 缺字段一律回落默认值，所以旧文件不会因为新增字段而失效。
- *
- * 这里只存「这个聊天怎么对待」；人格卡本身存在 `personas/`，两者用 `personaId` 关联。
- *
- * @module wechat-persona/chat/settings
- */
-
-import { readFile, stat } from 'node:fs/promises'
+/** 每个联系人的聊天设置。哈希目录隔离联系人，旧目录仅在身份匹配时读取。 */
+import { createHash } from 'node:crypto'
+import { readFile, readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { atomicJson } from '../storage/atomic.ts'
 import { withFileLock } from '../storage/lock.ts'
-import { join } from 'node:path'
 
 export interface ChatSettings {
-  /** 用哪张人格卡；undefined 表示用全局默认。 */
   personaId?: string
-  /** false = 这个聊天不回复（消息仍然会被读到，但不投递）。 */
   enabled: boolean
-  /** 单条回复的字数上限；undefined 表示用卡片自己的值。 */
+  /** 兼容已保存的发送参数；当前菜单不提供这些设置。 */
   maxChars?: number
-  /** 切分粒度；undefined 表示用卡片自己的值。 */
   split?: 'paragraph' | 'sentence' | 'none'
 }
 
-/** 默认设置：启用、跟随全局人格、跟随卡片长度。 */
-export const DEFAULT_CHAT_SETTINGS: ChatSettings = {
-  enabled: true,
-}
-
+export const DEFAULT_CHAT_SETTINGS: ChatSettings = { enabled: true }
 const MAX_CHARS_RANGE = { min: 20, max: 4_096 } as const
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/**
- * 把磁盘上的 JSON 收窄成设置；坏值逐项丢弃而不是整份作废。
- * @param raw - 解析后的 JSON。
- */
+/** 字段不合法时回落该字段的默认值；磁盘文档损坏则由读取层报错并保留原件。 */
 export function parseChatSettings(raw: unknown): ChatSettings {
   if (!isRecord(raw)) return { ...DEFAULT_CHAT_SETTINGS }
   const settings: ChatSettings = { ...DEFAULT_CHAT_SETTINGS }
-
   if (typeof raw['personaId'] === 'string' && raw['personaId'].trim() !== '') settings.personaId = raw['personaId'].trim()
   if (typeof raw['enabled'] === 'boolean') settings.enabled = raw['enabled']
-
   const maxChars = raw['maxChars']
   if (typeof maxChars === 'number' && Number.isFinite(maxChars)) {
     settings.maxChars = Math.round(Math.min(MAX_CHARS_RANGE.max, Math.max(MAX_CHARS_RANGE.min, maxChars)))
   }
-
   const split = raw['split']
   if (split === 'paragraph' || split === 'sentence' || split === 'none') settings.split = split
-
   return settings
 }
 
-/** 一个聊天的设置仓库。 */
+interface CachedSettings { settings: ChatSettings; mtimeMs: number; file: string }
+
 export class ChatSettingsStore {
   private readonly root: string
-  /** 缓存里带 mtime：文件被改过就重读，改完不必重启。 */
-  private readonly cache = new Map<string, { settings: ChatSettings; mtimeMs: number }>()
+  private readonly cache = new Map<string, CachedSettings>()
+  constructor(root: string) { this.root = root }
 
-  /**
-   * @param root - `chats/` 目录的绝对路径。
-   */
-  constructor(root: string) {
-    this.root = root
+  private directory(peerId: string): string {
+    if (!peerId) throw new Error('聊天联系人不能为空')
+    return createHash('sha256').update(peerId).digest('hex')
+  }
+  private fileOf(peerId: string): string { return join(this.root, this.directory(peerId), 'settings.json') }
+  private legacyDirectory(peerId: string): string | undefined {
+    const name = encodeURIComponent(peerId).replaceAll('%', '_')
+    return name !== '' && name !== '.' && name !== '..' ? name : undefined
   }
 
-  /**
-   * 读一个聊天的设置；文件不存在返回默认值。
-   * @param peerId - 微信用户 id。
-   */
-  async get(peerId: string): Promise<ChatSettings> {
-    const file = this.fileOf(peerId)
-    let mtimeMs = 0
-    try {
-      mtimeMs = (await stat(file)).mtimeMs
-    } catch {
-      // 没有文件 = 默认设置。
-      const settings = { ...DEFAULT_CHAT_SETTINGS }
-      this.cache.set(peerId, { settings, mtimeMs: 0 })
-      return settings
+  /** 旧转义目录可能碰撞，只能读取确实属于当前联系人的文档。 */
+  private async read(peerId: string, file: string, legacy: boolean): Promise<ChatSettings | undefined> {
+    let info
+    try { info = await stat(file) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
     }
     const cached = this.cache.get(peerId)
-    if (cached !== undefined && cached.mtimeMs === mtimeMs) return cached.settings
-    try {
-      const settings = parseChatSettings(JSON.parse(await readFile(file, 'utf8')) as unknown)
-      this.cache.set(peerId, { settings, mtimeMs })
-      return settings
-    } catch {
-      const settings = { ...DEFAULT_CHAT_SETTINGS }
-      this.cache.set(peerId, { settings, mtimeMs })
-      return settings
+    if (cached?.file === file && cached.mtimeMs === info.mtimeMs) return cached.settings
+    let raw: unknown
+    try { raw = JSON.parse(await readFile(file, 'utf8')) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw new Error('聊天设置无法读取或解析，原文件已保留', { cause: error })
     }
+    if (!isRecord(raw)) throw new Error('聊天设置格式错误，原文件已保留')
+    const legacyWithoutId = legacy && raw.peerId === undefined && /^[a-zA-Z0-9_-]+$/u.test(peerId)
+    if (raw.peerId !== peerId && !legacyWithoutId) {
+      if (legacy) return undefined
+      throw new Error('聊天设置的联系人不匹配，原文件已保留')
+    }
+    const settings = parseChatSettings(raw)
+    this.cache.set(peerId, { settings, mtimeMs: info.mtimeMs, file })
+    return settings
   }
 
-  /**
-   * 写一个聊天的设置（原子写）。
-   * @param peerId - 微信用户 id。
-   * @param settings - 要保存的设置。
-   */
+  async get(peerId: string): Promise<ChatSettings> {
+    const current = await this.read(peerId, this.fileOf(peerId), false)
+    if (current !== undefined) return current
+    const legacy = this.legacyDirectory(peerId)
+    if (legacy !== undefined && legacy !== this.directory(peerId)) {
+      const previous = await this.read(peerId, join(this.root, legacy, 'settings.json'), true)
+      if (previous !== undefined) return previous
+    }
+    return { ...DEFAULT_CHAT_SETTINGS }
+  }
+
   async save(peerId: string, settings: ChatSettings): Promise<ChatSettings> {
-    return await this.update(peerId,() => settings)
+    return await this.update(peerId, () => settings)
   }
 
-  /** 在文件事务内基于最新值执行部分修改，避免并发更新相互覆盖。 */
+  /** 仅在新哈希目录写入；读取旧值后提交新快照，旧文件保留供备份和核对。 */
   async update(peerId: string, change: (current: ChatSettings) => ChatSettings): Promise<ChatSettings> {
-    return await withFileLock(this.fileOf(peerId),async () => {
+    return await withFileLock(this.fileOf(peerId), async () => {
       this.cache.delete(peerId)
       const normalized = parseChatSettings(change(await this.get(peerId)))
-      await atomicJson(this.fileOf(peerId),{peerId,...normalized})
+      await atomicJson(this.fileOf(peerId), { peerId, ...normalized })
       this.cache.delete(peerId)
       return normalized
     })
   }
 
-  /**
-   * 列出已知聊天（真实 peer id）。
-   *
-   * 目录名是转义过的，所以这里逐个读 `settings.json` 里的 `peerId`；
-   * 没有这个字段的目录（手写的/旧版）按目录名返回。
-   */
   async listPeers(): Promise<string[]> {
-    const { readdir } = await import('node:fs/promises')
-    try {
-      const entries = await readdir(this.root, { withFileTypes: true })
-      const peers: string[] = []
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        try {
-          const raw = JSON.parse(await readFile(join(this.root, entry.name, 'settings.json'), 'utf8')) as { peerId?: unknown }
-          peers.push(typeof raw.peerId === 'string' && raw.peerId !== '' ? raw.peerId : entry.name)
-        } catch {
-          peers.push(entry.name)
-        }
-      }
-      return peers
-    } catch {
-      return []
+    let entries
+    try { entries = await readdir(this.root, { withFileTypes: true }) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
     }
-  }
-
-  /**
-   * peerId 里有 `/`、`:` 这类字符，落盘时要转义成安全目录名。
-   * 反解不需要——目录名只用于存储，真实 peer id 存在文件内容里的 key 上。
-   */
-  private dirOf(peerId: string): string {
-    return encodeURIComponent(peerId).replaceAll('%', '_')
-  }
-
-  private fileOf(peerId: string): string {
-    return join(this.root, this.dirOf(peerId), 'settings.json')
+    const peers = new Set<string>()
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      try {
+        const raw: unknown = JSON.parse(await readFile(join(this.root, entry.name, 'settings.json'), 'utf8'))
+        if (!isRecord(raw)) continue
+        const peer = typeof raw.peerId === 'string' && raw.peerId !== '' ? raw.peerId
+          : raw.peerId === undefined && /^[a-zA-Z0-9_-]+$/u.test(entry.name) ? entry.name : undefined
+        if (peer && (entry.name === this.directory(peer) || entry.name === this.legacyDirectory(peer))) peers.add(peer)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error
+      }
+    }
+    return [...peers].sort()
   }
 }
