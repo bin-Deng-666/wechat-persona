@@ -43,6 +43,8 @@ export interface PersonaCard {
   reply: PersonaReply
   examples: PersonaExample[]
   media: PersonaMedia
+  /** 干活时报平安的短句；一轮之内不重复。为空时回落到内置库。 */
+  progress: string[]
 }
 
 export interface CardIssue {
@@ -60,10 +62,75 @@ const ID_PATTERN = /^[a-z0-9-]{1,32}$/
 const MAX_LIST_ITEMS = 8
 const MAX_ITEM_CHARS = 60
 const MAX_EXAMPLES = 5
+/** 报平安短句的上限：够多才不重复，太多则说明写宽了。 */
+const MAX_PROGRESS_LINES = 40
+const MAX_PROGRESS_CHARS = 20
+/**
+ * 少于这个数就认为这套写得不够，退回内置库，并在卡上标一条提示。
+ *
+ * 这个下限**等于**当前的每轮配额：30 秒一句、窗口 5 分钟 → ceil(300000/30000) = 10 条。
+ * 也就是说 10 条刚好够一轮不重复，一环之内不会重样。
+ *
+ * 但它是**跨轮**失效的：下一轮从同一批里重洗，同一个联系人连着跑两个长任务，
+ * 会看到同样的十句。要缓解就得往上加（比如 20 条），或者让配额随窗口变化。
+ *
+ * ⚠️ 耦合：如果有人把 `noticeWindowMs` 调大（或 `noticeIntervalMs` 调小），
+ * 每轮配额会超过 10，这个下限就不再够用，必须同步上调，否则一轮内必然重复。
+ * 两处常量（这里与 `wechat/channel.ts` 的 maxNotices）是一对，改一个要看另一个。
+ */
+const MIN_PROGRESS_LINES = 10
 
 const DEFAULTS = {
   reply: { maxChars: 120, split: 'paragraph' as const },
   media: { sendStickers: true },
+}
+
+/**
+ * 读报平安短句。
+ *
+ * 与 `readList` 分开：那一套的上限是给 prompt 约束用的（8 条、60 字），
+ * 短句要的是「够多且够短」，规则完全不同，硬套会让一张卡只能写 8 句。
+ *
+ * 非法条目不阻断整张卡：超长截断、空串丢弃、重复合并，都记一条可读的警告。
+ */
+function readProgress(raw: unknown, warnings: CardIssue[]): string[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) {
+    warnings.push({ path: 'progress', message: '应为字符串数组，已回退到内置短句', severity: 'warn' })
+    return []
+  }
+  const seen = new Set<string>()
+  const lines: string[] = []
+  let dropped = 0
+  let clipped = 0
+  let duplicated = 0
+  for (const item of raw) {
+    if (typeof item !== 'string') { dropped += 1; continue }
+    const text = item.replace(/\s+/gu, ' ').trim()
+    if (text === '') { dropped += 1; continue }
+    const chars = Array.from(text)
+    const fitted = chars.length > MAX_PROGRESS_CHARS ? `${chars.slice(0, MAX_PROGRESS_CHARS - 1).join('')}…` : text
+    if (chars.length > MAX_PROGRESS_CHARS) clipped += 1
+    if (seen.has(fitted)) { duplicated += 1; continue }
+    seen.add(fitted)
+    lines.push(fitted)
+  }
+  if (dropped > 0) warnings.push({ path: 'progress', message: `忽略了 ${String(dropped)} 条空串或非字符串`, severity: 'warn' })
+  if (clipped > 0) warnings.push({ path: 'progress', message: `${String(clipped)} 条超过 ${String(MAX_PROGRESS_CHARS)} 字，已截断`, severity: 'warn' })
+  if (duplicated > 0) warnings.push({ path: 'progress', message: `${String(duplicated)} 条重复，已合并`, severity: 'warn' })
+  if (lines.length > MAX_PROGRESS_LINES) {
+    warnings.push({ path: 'progress', message: `超过 ${String(MAX_PROGRESS_LINES)} 条，只保留前 ${String(MAX_PROGRESS_LINES)} 条`, severity: 'warn' })
+    return lines.slice(0, MAX_PROGRESS_LINES)
+  }
+  if (lines.length > 0 && lines.length < MIN_PROGRESS_LINES) {
+    warnings.push({
+      path: 'progress',
+      message: `只有 ${String(lines.length)} 条，建议至少 ${String(MIN_PROGRESS_LINES)} 条以免一轮内重复；不足时回退到内置短句`,
+      severity: 'warn',
+    })
+    return []
+  }
+  return lines
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,6 +282,8 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
     }
   }
 
+  const progress = readProgress(raw.progress, warnings)
+
   const mediaRaw = isRecord(raw.media) ? raw.media : {}
   const media: PersonaMedia = {
     sendStickers: mediaRaw.sendStickers !== false,
@@ -234,7 +303,7 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
     greeting: 'greeting 从未生效，已移除',
     aliases: 'aliases 只对群聊有意义，本项目不支持群聊，已移除',
   }
-  const KNOWN_KEYS = new Set(['id', 'name', 'description', 'prompt', 'reply', 'examples', 'media'])
+  const KNOWN_KEYS = new Set(['id', 'name', 'description', 'prompt', 'reply', 'examples', 'media', 'progress'])
   for (const key of Object.keys(raw)) {
     const removed = REMOVED_KEYS[key]
     if (removed !== undefined) {
@@ -257,6 +326,7 @@ export function parsePersonaCard(raw: unknown, expectedId?: string): ParseResult
       reply,
       examples,
       media,
+      progress,
     },
   }
 }

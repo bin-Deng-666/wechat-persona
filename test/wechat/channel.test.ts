@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -820,5 +820,131 @@ describe('卡住与连续入站', () => {
     assert.ok(legs.some(item => item.line === '时序 first-text'), JSON.stringify(legs))
     const firstText = legs.find(item => item.line === '时序 first-text')
     assert.equal((firstText?.detail as { sinceReceived?: number } | undefined)?.sinceReceived, 2_400)
+  })
+})
+
+describe('报平安', () => {
+  function setup(options: { noticeIntervalMs?: number; personaRoot?: string; personaId?: string } = {}) {
+    const { sessions, delivered } = fakeSessions()
+    const { events, emit } = fakeEvents()
+    const sent: { peerId: string; text: string; token: string | undefined }[] = []
+    const reports: { line: string; detail?: unknown }[] = []
+    const replies = new ReplyQueue({ send: async (peerId, text, token) => { sent.push({ peerId, text, token }) }, sleep: async () => {} })
+    const channel = new Channel({
+      api: {} as ApiClient,
+      account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
+      sessions,
+      access: createAccessPolicy({ owner: 'wxid-owner' }),
+      personas: new PersonaStore(options.personaRoot ?? '/nonexistent'),
+      defaultPersona: options.personaId ?? 'default',
+      replies,
+      events,
+      report: (line, detail) => { reports.push({ line, detail }) },
+      sleep: async () => {},
+      mergeWindowMs: 0,
+      stallAfterMs: 0,
+      noticeIntervalMs: options.noticeIntervalMs ?? 30,
+    })
+    return { channel, delivered, sent, emit, reports }
+  }
+
+  const textStep = (turn: number, text: string) => ({
+    type: 'assistant/message',
+    data: { turn, message: { content: [{ type: 'text', text }] } },
+  })
+
+  it('任务进行中按间隔报平安', async () => {
+    const { channel, sent } = setup({ noticeIntervalMs: 30 })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 110))
+    const names = sent.map(item => item.text)
+    assert.ok(names.length >= 2, `应当至少报两次：${JSON.stringify(names)}`)
+    assert.ok(names.length <= 5, `不应刷屏：${JSON.stringify(names)}`)
+    await channel.stop()
+  })
+
+  it('一轮之内不重复', async () => {
+    const { channel, sent } = setup({ noticeIntervalMs: 20 })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 160))
+    const names = sent.map(item => item.text)
+    assert.ok(names.length >= 3, `样本太少：${JSON.stringify(names)}`)
+    assert.equal(new Set(names).size, names.length, `出现重复：${JSON.stringify(names)}`)
+    await channel.stop()
+  })
+
+  it('快速完成不发报平安', async () => {
+    const { channel, sent, emit } = setup({ noticeIntervalMs: 5_000 })
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    emit('channel-persona-wxid-owner', textStep(1, '好了。'))
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.deepEqual(sent.map(item => item.text), ['好了。'])
+    await channel.stop()
+  })
+
+  it('正文到达后立刻停，不再补报平安', async () => {
+    const { channel, sent, emit } = setup({ noticeIntervalMs: 25 })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const before = sent.length
+    assert.ok(before >= 1)
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    emit('channel-persona-wxid-owner', textStep(1, '做完了。'))
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const after = sent.map(item => item.text)
+    assert.ok(after.includes('做完了。'), JSON.stringify(after))
+    // 正文之后不应再有新的报平安。
+    assert.equal(after.filter(text => text !== '做完了。').length, before, JSON.stringify(after))
+    await channel.stop()
+  })
+
+  it('连续入站合并到同一活动，报平安仍不重复', async () => {
+    const { channel, sent } = setup({ noticeIntervalMs: 25 })
+    await channel.handle(userMessage({ message_id: 'a' }))
+    await new Promise(resolve => setTimeout(resolve, 40))
+    await channel.handle(userMessage({ message_id: 'b', item_list: [{ type: 1, text_item: { text: '卡住了吗' } }] }))
+    await channel.handle(userMessage({ message_id: 'c', item_list: [{ type: 1, text_item: { text: '什么情况' } }] }))
+    await new Promise(resolve => setTimeout(resolve, 110))
+    const names = sent.map(item => item.text)
+    assert.ok(names.length >= 2, `应当继续报平安：${JSON.stringify(names)}`)
+    assert.equal(new Set(names).size, names.length, `出现重复：${JSON.stringify(names)}`)
+    await channel.stop()
+  })
+
+  it('用当前人格卡里的句子，而不是内置库', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wechat-notice-'))
+    await mkdir(join(root, 'tester'), { recursive: true })
+    await writeFile(join(root, 'tester', 'persona.json'), JSON.stringify({
+      id: 'tester', name: '测试', prompt: { identity: '你是测试。' },
+      progress: [
+        '甲句在此', '乙句在此', '丙句在此', '丁句在此', '戊句在此',
+        '己句在此', '庚句在此', '辛句在此', '壬句在此', '癸句在此',
+      ],
+    }), 'utf8')
+    const { channel, sent } = setup({ noticeIntervalMs: 20, personaRoot: root, personaId: 'tester' })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const names = sent.map(item => item.text)
+    assert.ok(names.length >= 1, JSON.stringify(names))
+    for (const text of names) assert.match(text, /句在此/u, `用了内置库：${JSON.stringify(names)}`)
+    await channel.stop()
+    await rm(root, { force: true, recursive: true })
+  })
+
+  it('人格卡没有该字段时回退内置库', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wechat-notice-bare-'))
+    await mkdir(join(root, 'bare'), { recursive: true })
+    await writeFile(join(root, 'bare', 'persona.json'), JSON.stringify({
+      id: 'bare', name: '裸卡', prompt: { identity: '你是裸卡。' },
+    }), 'utf8')
+    const { channel, sent } = setup({ noticeIntervalMs: 20, personaRoot: root, personaId: 'bare' })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const names = sent.map(item => item.text)
+    assert.ok(names.length >= 1, JSON.stringify(names))
+    assert.doesNotMatch(names.join('\n'), /句在此/u)
+    await channel.stop()
+    await rm(root, { force: true, recursive: true })
   })
 })

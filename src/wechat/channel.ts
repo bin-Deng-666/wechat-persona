@@ -23,6 +23,7 @@ import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from
 import { extractStickerAnnotations } from '../stickers/markers.ts'
 import type { StickerLibrary } from '../stickers/library.ts'
 import { parseCommand } from './commands.ts'
+import { createNoticePicker, noticesFor } from './notices.ts'
 import type { PeerGenerations } from '../chat/generations.ts'
 import { SerialWork } from '../storage/atomic.ts'
 import type { PeerMemory } from '../memory/store.ts'
@@ -68,6 +69,20 @@ export interface ChannelOptions {
   progressAfterMs?: number
   /** 交给宿主后多久仍无进展就主动告知用户；0 关闭。 */
   stallAfterMs?: number
+  /**
+   * 干活期间隔多久报一句平安，毫秒；默认 30_000，0 关闭。
+   *
+   * 报平安的句子来自人格卡的 `progress`，没写就用内置库。
+   */
+  noticeIntervalMs?: number
+  /**
+   * 报平安最多持续多久（从交给宿主算起），默认 5 分钟。
+   *
+   * 这是「一轮上限」的来源：上限 = ceil(窗口 / 间隔)，跟着节奏一起变，
+   * 而不是另写一个死数字——改间隔时不会立刻把配额打满。
+   * 超过窗口就安静下来，长任务交给卡住看门狗兜底。
+   */
+  noticeWindowMs?: number
 }
 export function textOf(message: WeixinMessage): string {
   return (message.item_list ?? []).flatMap(item => item.type === 1 && typeof item.text_item?.text === 'string' ? [item.text_item.text]
@@ -87,6 +102,10 @@ export class Channel {
   private eventQueue(peerId: string): SerialWork { let queue = this.eventWork.get(peerId); if (!queue) { queue = new SerialWork(); this.eventWork.set(peerId, queue) } return queue }
   private readonly progress = new Map<string, NodeJS.Timeout>()
   private readonly stalls = new Map<string, NodeJS.Timeout>()
+  /** 每个联系人干活期间「报平安」的定时器与取句器。 */
+  private readonly notices = new Map<string, { timer: NodeJS.Timeout; activityId: string; next: () => string | undefined; sent: number; deadline: number }>()
+  /** 每个联系人当前该用哪套句子；在解析人格卡时写入。 */
+  private readonly noticeLines = new Map<string, readonly string[]>()
   private readonly turnCounts = new Map<string, number>()
   private readonly activity: ActivityStore
   private readonly controls: ChatControls
@@ -252,6 +271,7 @@ export class Channel {
       const settings = await this.settingsFor(conversation.peerId)
       const card = PersonaStore.resolve(settings.personaId ?? this.options.defaultPersona, await this.options.personas.snapshot())
       this.plans.set(conversation.peerId, resolvePlan(card, settings))
+      this.noticeLines.set(conversation.peerId, noticesFor(card))
       const content: { type: string; [key: string]: unknown }[] = []
       const addText = (text: string) => {
         if (!text) return
@@ -297,6 +317,7 @@ export class Channel {
     batch.status = 'submitted'; await this.history.saveBatch(peerId, batch)
     // 宿主接下了这一批：从现在开始等它开轮，超时就主动报「卡住了」。
     this.armStallWatch(conversation, activity)
+    this.startNotices(conversation, activity)
     this.reportLeg(conversation.peerId, 'submitted', activity)
     this.activity.touch(peerId, (this.options.now ?? Date.now)())
     this.turnCounts.set(peerId, (this.turnCounts.get(peerId) ?? 0) + 1)
@@ -374,6 +395,7 @@ export class Channel {
     const active = conversation.invalidate()
     const output = this.options.replies.cancel(conversation.peerId)
     this.clearProgress(conversation.peerId)
+    this.stopNotices(conversation.peerId)
     await this.history.cancelTask(conversation.peerId, conversation.generation)
     this.options.approvals?.cancel(conversation.peerId, '用户停止')
     const cancelled = await this.options.sessions.cancel?.(conversation.peerId, conversation.generation) ?? false
@@ -408,6 +430,67 @@ export class Channel {
     }))
   }
   private clearProgress(peerId: string): void { const timer = this.progress.get(peerId); if (timer) clearTimeout(timer); this.progress.delete(peerId) }
+
+  /**
+   * 干活期间每隔一段时间报一句平安。
+   *
+   * 句子来自人格卡（`noticesFor`），一轮内由 `createNoticePicker` 洗牌后依次取，不重复。
+   * 只在「这一轮还在跑」时响；正文到达、回合结束、停止、关闭都会停。
+   *
+   * 同一轮里可能多次交给宿主（连续入站）：这时沿用已有的取句进度，只重排定时器。
+   * 重建取句器会让已发过的句子重新进入池子，正是「连发之后开始重复」的成因。
+   */
+  private startNotices(conversation: PeerConversation, activity: ConversationActivity): void {
+    const interval = this.options.noticeIntervalMs ?? 30_000
+    if (interval <= 0) return
+    const window = this.options.noticeWindowMs ?? 300_000
+    const now = (this.options.now ?? Date.now)()
+    const existing = this.notices.get(conversation.peerId)
+    if (existing !== undefined) clearTimeout(existing.timer)
+    // 同一轮里再次交给宿主：沿用进度与已发条数，只把截止时间往后挪。
+    const sameRound = existing !== undefined && existing.activityId === activity.id
+    const next = sameRound ? existing.next : createNoticePicker(this.noticeLines.get(conversation.peerId) ?? [])
+    const state = {
+      timer: undefined as unknown as NodeJS.Timeout,
+      activityId: activity.id,
+      next,
+      sent: sameRound ? existing.sent : 0,
+      deadline: now + window,
+    }
+    // 上限由窗口推导：30 秒间隔 = 最多 10 条，60 秒间隔 = 最多 5 条。
+    // ⚠️ 与 `persona/card.ts` 的 MIN_PROGRESS_LINES 是同一对约束：人格卡至少要写够
+    // 这么多条才能保证一轮内不重复。调大窗口（或调小间隔）会让配额超过 10，
+    // 那时必须同步上调那个下限，否则一轮内会开始重样。
+    const maxNotices = Math.max(1, Math.ceil(window / interval))
+    const schedule = (): void => {
+      const timer = setTimeout(() => {
+        if (this.closed || conversation.activity !== activity || activity.signal.aborted) { this.stopNotices(conversation.peerId); return }
+        if (activity.phase === 'idle' || activity.phase === 'compacting') { this.stopNotices(conversation.peerId); return }
+        if ((this.options.now ?? Date.now)() >= state.deadline || state.sent >= maxNotices) {
+          this.options.report?.('报平安结束', { peerId: conversation.peerId.slice(0, 12), activity: activity.id.slice(0, 8), sent: state.sent, max: maxNotices })
+          this.stopNotices(conversation.peerId)
+          return
+        }
+        const line = next()
+        if (line !== undefined) {
+          state.sent += 1
+          this.options.report?.('报平安', { peerId: conversation.peerId.slice(0, 12), activity: activity.id.slice(0, 8), nth: state.sent, max: maxNotices, chars: line.length })
+          this.notice(conversation, line, activity)
+        }
+        schedule()
+      }, interval)
+      timer.unref?.()
+      state.timer = timer
+      this.notices.set(conversation.peerId, state)
+    }
+    schedule()
+  }
+
+  private stopNotices(peerId: string): void {
+    const entry = this.notices.get(peerId)
+    if (entry !== undefined) clearTimeout(entry.timer)
+    this.notices.delete(peerId)
+  }
   private subscribeReplies(): void {
     if (this.unsubscribe || this.closed) return
     this.unsubscribe = this.options.events.on('session/event', (session, event) => {
@@ -441,6 +524,7 @@ export class Channel {
       const text = extractAssistantText(event)
       if (text === undefined) return
       this.clearProgress(conversation.peerId)
+      this.stopNotices(conversation.peerId)
       conversation.markFirstText((this.options.now ?? Date.now)())
       this.reportLeg(conversation.peerId, 'first-text', activity)
       const scope = conversation.scope(activity)
@@ -478,6 +562,7 @@ export class Channel {
     const activity = conversation.finish(turn)
     if (!activity) return
     this.disarmStallWatch(conversation.peerId)
+    this.stopNotices(conversation.peerId)
     this.reportLeg(conversation.peerId, 'turn-end', activity)
     this.clearProgress(conversation.peerId); this.options.approvals?.cancel(conversation.peerId)
     const data = isRecord(event.data) ? event.data : {}, reason = isRecord(data.reason) ? data.reason : {}
@@ -507,7 +592,7 @@ export class Channel {
     this.running = false; this.closed = true; this.abort?.abort(); this.unsubscribe?.(); this.unsubscribe = undefined
     for (const pending of this.conversations.values()) {
       const conversation = await pending
-      conversation.close(); this.options.replies.cancel(conversation.peerId); this.clearProgress(conversation.peerId)
+      conversation.close(); this.options.replies.cancel(conversation.peerId); this.clearProgress(conversation.peerId); this.stopNotices(conversation.peerId)
       this.options.approvals?.cancel(conversation.peerId)
     }
     this.controls.dispose()

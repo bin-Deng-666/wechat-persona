@@ -113,3 +113,96 @@ describe('parsePersonaCard', () => {
     assert.ok(result.warnings.some(issue => issue.path === 'examples'))
   })
 })
+
+describe('progress 字段（干活时的报平安短句）', () => {
+  const base = { ...minimal }
+  /** 凑够下限的填充句；测试只关心首尾几条。 */
+  const fill = (count: number) => Array.from({ length: count }, (_, index) => `填充${String(index)}。`)
+
+  it('合法数组原样保留', () => {
+    const progress = ['在弄，别急。', ...fill(8), '快好了。']
+    const result = parsePersonaCard({ ...base, progress })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.card.progress, progress)
+  })
+
+  it('非数组给出警告并回退到内置库（空数组）', () => {
+    const result = parsePersonaCard({ ...base, progress: '在弄，别急。' })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.card.progress, [])
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('字符串数组')))
+  })
+
+  it('空串与纯空白被过滤，并计数', () => {
+    const result = parsePersonaCard({ ...base, progress: ['在弄。', ...fill(9), '', '   '] })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.card.progress.length, 10)
+    assert.equal(result.card.progress[0], '在弄。')
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('2 条空串')))
+  })
+
+  it('非字符串条目被过滤', () => {
+    const result = parsePersonaCard({ ...base, progress: ['在弄。', ...fill(9), 42, null, { a: 1 }] })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.card.progress.length, 10)
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('3 条空串或非字符串')))
+  })
+
+  it('重复条目合并，归一化空白后判重', () => {
+    const result = parsePersonaCard({ ...base, progress: ['在弄。', ...fill(9), '在弄。', ' 在弄。 '] })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.card.progress.length, 10)
+    assert.equal(result.card.progress.filter(line => line === '在弄。').length, 1)
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('2 条重复')))
+  })
+
+  it('超过 20 字的条目被截断并加省略号', () => {
+    const long = '这是一条特别特别长的报平安句子用来测试截断逻辑'
+    const result = parsePersonaCard({ ...base, progress: [long, ...fill(9)] })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    const first = result.card.progress[0] ?? ''
+    assert.ok(first.endsWith('…'), first)
+    assert.equal(Array.from(first).length, 20)
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('已截断')))
+  })
+
+  it('超过 40 条只保留前 40 条', () => {
+    const many = Array.from({ length: 45 }, (_, index) => `第${String(index)}句。`)
+    const result = parsePersonaCard({ ...base, progress: many })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.card.progress.length, 40)
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('只保留前 40 条')))
+  })
+
+  it('不足 10 条时回退内置库并提示', () => {
+    const result = parsePersonaCard({ ...base, progress: ['在弄。', '快好了。'] })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.card.progress, [])
+    assert.ok(result.warnings.some(issue => issue.path === 'progress' && issue.message.includes('建议至少 10 条')))
+  })
+
+  it('刚好 10 条就能用——30 秒一句、5 分钟窗口正好不重复', () => {
+    const progress = fill(10)
+    const result = parsePersonaCard({ ...base, progress })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.card.progress, progress)
+    assert.equal(result.warnings.some(issue => issue.path === 'progress'), false)
+  })
+
+  it('完全不写这个字段时为空数组，由插件回退内置库', () => {
+    const result = parsePersonaCard({ ...base })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.deepEqual(result.card.progress, [])
+    assert.equal(result.warnings.some(issue => issue.path === 'progress'), false)
+  })
+})
