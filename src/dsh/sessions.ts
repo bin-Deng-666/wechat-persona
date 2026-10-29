@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { installModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 
 /** 本通道拥有的会话 id 前缀，与其他插件的区分开。 */
 export const SESSION_ID_PREFIX = 'channel-persona-'
@@ -117,6 +118,8 @@ export interface PeerSessionsOptions {
 export class PeerSessions {
   private readonly options: PeerSessionsOptions
   private readonly live = new Map<string, AgentHandleLike>()
+  /** 由本通道创建/恢复的会话，其可热切换的模型选择。借用的宿主会话不在此表。 */
+  private readonly selections = new Map<string, ModelSelectionRef>()
 
   constructor(options: PeerSessionsOptions) {
     this.options = options
@@ -155,8 +158,18 @@ export class PeerSessions {
       : this.options.sessionOptions
     const options = selection === undefined ? {} : { agentOptions: selection }
     let handle: AgentHandleLike
-    const setup = this.options.setup === undefined ? {} : {
-      setup: async (agentCtx: unknown, agent: unknown) => { await this.options.setup!(agentCtx, agent, peerId) },
+    // 安装一个可变的模型选择：之后换模型只影响下一轮，不需要重建会话。
+    let modelSelection: ModelSelectionRef | undefined
+    const setup = {
+      setup: async (agentCtx: unknown, agent: unknown) => {
+        if (this.options.setup !== undefined) await this.options.setup(agentCtx, agent, peerId)
+        // 测试夹具的 agentCtx 可能只是空对象；真实宿主一定提供 on()。
+        if (typeof (agentCtx as Context | undefined)?.on === 'function') {
+          const ref: ModelSelectionRef = { current: undefined, assembled: undefined }
+          installModelSelection(agentCtx as Context, ref)
+          modelSelection = ref
+        }
+      },
     }
     if ((await this.options.sessionExists?.(sessionId)) === true) {
       handle = await registry.resume({ resumeSessionId: sessionId, ...options, ...setup })
@@ -180,8 +193,25 @@ export class PeerSessions {
     }
 
     this.live.set(key, handle)
+    if (modelSelection !== undefined) this.selections.set(String(handle.agent.id), modelSelection)
     this.options.onHandle?.(handle, peerId)
     return handle
+  }
+
+  /**
+   * 在现有会话里切换模型。
+   *
+   * @returns 这个会话由本通道创建、且支持热切换时返回 true；否则 false，调用方决定是否开新会话。
+   */
+  async selectModel(peerId: string, generation: number, selection: { provider: string; model: string }): Promise<boolean> {
+    const handle = this.live.get(`${peerId}#${String(generation)}`)
+    // 还没有活着的会话：设置会在下一次创建/恢复时作为 agentOptions 生效，不必为此新开一段。
+    if (handle === undefined) return true
+    const ref = this.selections.get(String(handle.agent.id))
+    // 借用的宿主会话不是我们组装的，不能在这里偷偷改它的路由。
+    if (ref === undefined) return false
+    ref.current = { provider: selection.provider, model: selection.model }
+    return true
   }
 
   /**
@@ -242,7 +272,10 @@ export class PeerSessions {
     const key = `${peerId}#${String(generation)}`
     const handle = this.live.get(key)
     this.live.delete(key)
-    if (handle !== undefined) await handle.dispose()
+    if (handle !== undefined) {
+      this.selections.delete(String(handle.agent.id))
+      await handle.dispose()
+    }
   }
 
   /** 关掉本通道自己创建的所有 agent。 */
@@ -250,6 +283,7 @@ export class PeerSessions {
     const handles = [...this.live.values()]
     this.live.clear()
     for (const handle of handles) {
+      this.selections.delete(String(handle.agent.id))
       try {
         await handle.dispose()
       } catch (error) {

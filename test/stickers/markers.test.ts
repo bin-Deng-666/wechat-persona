@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { parseStickerToken, parseStickerTokens, extractStickerAnnotations } from '../../src/stickers/markers.ts'
+import { parseStickerToken, parseStickerTokens, extractStickerAnnotations, splitStickerSegments } from '../../src/stickers/markers.ts'
 
 describe('parseStickerToken', () => {
   it('抽出名字与剩余文字', () => {
@@ -33,5 +33,26 @@ describe('多条表情标记的解析', () => {
     assert.deepEqual(parseStickerTokens('好[表情:a] 的[表情：b]'), { names: ['a', 'b'], text: '好 的' })
     assert.deepEqual(parseStickerTokens('[表情:单独]'), { names: ['单独'], text: '' })
     assert.deepEqual(parseStickerTokens('纯文字'), { names: [], text: '纯文字' })
+  })
+})
+
+describe('splitStickerSegments', () => {
+  it('按原文顺序切出文字与表情', () => {
+    assert.deepEqual(splitStickerSegments('前[表情:开心]后'), [
+      { kind: 'text', value: '前' },
+      { kind: 'sticker', value: '开心' },
+      { kind: 'text', value: '后' },
+    ])
+  })
+
+  it('没有表情时只有一段文字', () => {
+    assert.deepEqual(splitStickerSegments('纯文字'), [{ kind: 'text', value: '纯文字' }])
+  })
+
+  it('名字不合法时保留原文，不吞掉用户的字', () => {
+    const longName = '名'.repeat(25)
+    assert.deepEqual(splitStickerSegments(`看这个[表情:${longName}]`), [
+      { kind: 'text', value: `看这个[表情:${longName}]` },
+    ])
   })
 })

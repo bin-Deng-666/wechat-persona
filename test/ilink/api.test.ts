@@ -149,6 +149,27 @@ describe('createApiClient', () => {
     assert.equal(calls[0]?.url, 'https://x.cn/ilink/bot/getupdates')
   })
 
+
+  it('请求超时后中止，而不是无限挂起', async () => {
+    // 用 ref 保持事件循环存活，否则未到 10ms 定时器就被判为悬空 Promise。
+    const keepAlive = setTimeout(() => {}, 100)
+    const impl: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        if (signal === null || signal === undefined) return
+        signal.addEventListener('abort', () => { reject(Object.assign(new Error('aborted'), { name: 'AbortError' })) })
+      })
+    try {
+      const client = createApiClient({ fetchImpl: impl })
+      await assert.rejects(
+        client.sendText({ baseUrl: 'https://x.cn', endpoint: 'ilink/bot/sendmessage', label: 'sendmessage', token: 't', to: 'u', text: 'hi', timeoutMs: 10 }),
+        (error: unknown) => (error as { classification?: { type?: string } }).classification?.type === 'timeout',
+      )
+    } finally {
+      clearTimeout(keepAlive)
+    }
+  })
+
   it('调用方 signal 取消后请求被中断', async () => {
     const impl: typeof fetch = (_input, init) =>
       new Promise((_resolve, reject) => {

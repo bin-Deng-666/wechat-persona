@@ -15,16 +15,15 @@ export const MessageType = { USER: 1, BOT: 2 } as const
 /** 消息生命周期：0 新、1 生成中、2 完成。 */
 export const MessageState = { NEW: 0, GENERATING: 1, FINISH: 2 } as const
 
-/** `MessageItem.type` 的判别式。 */
-export const MessageItemType = {
-  TEXT: 1,
-  IMAGE: 2,
-  VOICE: 3,
-  FILE: 4,
-  VIDEO: 5,
-  TOOL_CALL_START: 11,
-  TOOL_CALL_RESULT: 12,
-} as const
+/** `MessageItem.type` 的判别式；代码里用数字字面量，这里只作协议说明。 */
+export type MessageItemType =
+  | 1 // 文本
+  | 2 // 图片
+  | 3 // 语音
+  | 4 // 文件
+  | 5 // 视频
+  | 11 // 工具调用开始
+  | 12 // 工具调用结果
 
 /** 加密媒体在 CDN 上的引用。 */
 export interface MediaRef {

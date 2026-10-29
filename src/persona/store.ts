@@ -51,7 +51,7 @@ export const BUILTIN_DEFAULT: PersonaCard = {
   examples: [],
   media: { sendStickers: true },
   // 直接、简短、不客套；只说在弄，不承诺时间，也不假装知道还剩多少。
-  // 10 条 = 一轮配额（20 秒一句、200 秒窗口），一轮内不重样。
+  // 10 条 = 一轮配额（60 秒一句、600 秒窗口），一轮内不重样。
   progress: [
     '在弄，稍等。',
     '这步慢，在等。',

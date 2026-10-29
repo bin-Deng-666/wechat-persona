@@ -110,6 +110,23 @@ describe('ReplyQueue', () => {
     assert.deepEqual(waits, [2_000, 4_000])
   })
 
+
+  it('限流退避期间刷新令牌，用最新入站令牌重试', async () => {
+    const tokens: (string | undefined)[] = []
+    let current = 'old-token', throttles = 1
+    const queue = new ReplyQueue({
+      send: async (_peer, _text, token) => {
+        tokens.push(token)
+        if (throttles > 0) { throttles -= 1; throw Object.assign(new Error('throttled'), { code: -2 }) }
+      },
+      // 退避期间用户又发了一条消息：令牌应换成新的。
+      sleep: async () => { current = 'fresh-token' },
+      maxThrottleAttempts: 3,
+    })
+    await queue.enqueue('p1', 'hi', () => current)
+    assert.deepEqual(tokens, ['old-token', 'fresh-token'])
+  })
+
   it('限流次数用尽后按普通失败处理', async () => {
     const giveUps: string[] = []
     const { send } = sender({ throttle: 99 })
@@ -122,6 +139,38 @@ describe('ReplyQueue', () => {
     })
     await queue.enqueue('p1', 'hi')
     assert.deepEqual(giveUps, ['hi'])
+  })
+
+
+  it('相邻气泡按最小间隔节流，不额外拖慢第一条', async () => {
+    const waits: number[] = []
+    let clock = 0
+    const queue = new ReplyQueue({
+      send: async () => { clock += 100 },
+      sleep: async ms => { waits.push(ms); clock += ms },
+      now: () => clock,
+      minIntervalMs: 2_000,
+      plan: { softChars: 200, hardChars: 4_000, splitMode: 'paragraph', gapMs: 0 },
+    })
+    await queue.enqueue('p1', '一[分条]二[分条]三')
+    assert.deepEqual(waits, [2_000, 2_000])
+  })
+
+
+  it('关键提示在限流下有更长的重试预算', async () => {
+    let attempts = 0
+    const queue = new ReplyQueue({
+      send: async () => { attempts += 1; throw Object.assign(new Error('throttled'), { code: -2 }) },
+      sleep: async () => {},
+      maxThrottleAttempts: 2,
+    })
+    const normal = await queue.enqueue('p1', '普通')
+    assert.equal(normal.status, 'failed')
+    const normalAttempts = attempts
+    attempts = 0
+    const urgent = await queue.enqueue('p1', '重要', undefined, undefined, { urgent: true })
+    assert.equal(urgent.status, 'failed')
+    assert.ok(attempts > normalAttempts, `关键提示应多试几次：${attempts} vs ${normalAttempts}`)
   })
 
   it('同一 peer 的发送保序', async () => {

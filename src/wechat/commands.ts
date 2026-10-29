@@ -31,6 +31,7 @@ export const COMMANDS: readonly { name: string; usage: string; description: stri
   { name: 'help', usage: '帮助', description: '查看这份指令说明', group: '常用入口' },
   { name: 'new', usage: '新对话', description: '从新话题开始，旧记录保留', group: '对话管理' },
   { name: 'compact', usage: '压缩', description: '整理前面的内容，继续当前对话', group: '对话管理' },
+  { name: 'retry', usage: '重试', description: '重新发送上一条未确认送达的回复', group: '对话管理' },
   { name: 'stop', usage: '停止', description: '停止当前任务和待发送的消息', group: '对话管理' },
   { name: '表情', usage: '表情', description: '查看收藏的表情', group: '表情用法' },
   { name: '表情', usage: '表情 收 名字', description: '收藏刚发来的图片', group: '表情用法' },
@@ -39,7 +40,7 @@ export const COMMANDS: readonly { name: string; usage: string; description: stri
 
 const CHINESE_COMMANDS: Record<string, string> = {
   '菜单': 'menu', '设置': 'menu', '记忆': 'memory', '帮助': 'help', '新对话': 'new', '压缩': 'compact', '压缩对话': 'compact',
-  '状态': 'status', '人格': 'persona', '停止': 'stop', '表情': '表情',
+  '状态': 'status', '人格': 'persona', '重试': 'retry', '停止': 'stop', '表情': '表情',
 }
 
 /**
@@ -94,7 +95,7 @@ export interface StatusInput {
   personaName: string
   /** 会话代次：0 表示第一段对话。 */
   generation: number
-  /** 这个聊天已经处理过多少条消息。 */
+  /** 本次运行已经处理过多少轮，不做跨重启累计。 */
   turns: number
   /** 最近一次活跃的相对时间描述，例如「3 分钟前」。 */
   lastActive?: string
@@ -112,7 +113,7 @@ export function formatStatus(input: StatusInput): string {
     '',
     `人格：${input.personaName}（${input.personaId}）`,
     `对话：第 ${String(input.generation + 1)} 段`,
-    `累计消息：${String(input.turns)} 条`,
+    `本次运行已处理 ${String(input.turns)} 轮`,
     `权限：${input.permission}`,
   ]
   if (input.lastActive !== undefined) lines.push(`最近活跃：${input.lastActive}`)

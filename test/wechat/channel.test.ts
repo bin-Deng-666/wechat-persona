@@ -140,19 +140,19 @@ describe('Channel.handle', () => {
     assert.equal(sent[0]?.token, 'ctx-1')
   })
 
-  it('工具消息（旁白）不发，未知会话不发', async () => {
+  it('工具旁白作为真实过程发送，未知会话仍忽略', async () => {
     const { channel, sent, emit } = setup()
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', {
       type: 'assistant/message',
-      data: { message: { content: [{ type: 'text', text: '接下来：' }, { type: 'tool-call' }] } },
+      data: { message: { content: [{ type: 'reasoning', text: '不能公开' }, { type: 'text', text: '接下来核对配置。' }, { type: 'tool-call' }] } },
     })
     emit('some-other-session', {
       type: 'assistant/message',
       data: { message: { content: [{ type: 'text', text: '不该发' }] } },
     })
     await new Promise(resolve => setTimeout(resolve, 0))
-    assert.equal(sent.length, 0)
+    assert.deepEqual(sent.map(item => item.text), ['接下来核对配置。'])
   })
 })
 
@@ -325,7 +325,6 @@ describe('回复里的表情标记', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      sendSticker,
     })
     return { channel, emit, sent }
   }
@@ -512,7 +511,7 @@ describe('内置命令', () => {
 })
 
 describe('连发合并与失败反馈', () => {
-  function setup(options: { mergeWindowMs?: number; progressAfterMs?: number } = {}) {
+  function setup(options: { mergeWindowMs?: number } = {}) {
     const { sessions, delivered } = fakeSessions()
     const { events, emit } = fakeEvents()
     const sent: { peerId: string; text: string; token: string | undefined }[] = []
@@ -533,8 +532,7 @@ describe('连发合并与失败反馈', () => {
       sleep: async () => {},
       mergeWindowMs: options.mergeWindowMs ?? 0,
       // 测试里不要真的等 25 秒。
-      progressAfterMs: options.progressAfterMs ?? 0,
-    })
+          })
     return { channel, delivered, sent, emit }
   }
 
@@ -565,7 +563,7 @@ describe('连发合并与失败反馈', () => {
       data: { reason: { kind: 'error', error: { message: '模型返回了 400' } } },
     })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.ok(sent.some(item => item.text.includes('这一轮没完成')), JSON.stringify(sent))
+    assert.ok(sent.some(item => item.text.includes('模型或服务暂时出错了') && item.text.includes('模型返回了 400')), JSON.stringify(sent))
   })
 
   it('被前置条件挡下时说清楚（这不是等审批）', async () => {
@@ -584,8 +582,8 @@ describe('连发合并与失败反馈', () => {
     assert.ok(sent.some(item => item.text.includes('长度上限')))
   })
 
-  it('等待期间不主动产出内容，只在正文到达时说话', async () => {
-    const { channel, sent, emit } = setup({ progressAfterMs: 50 })
+  it('没有旁白的工具步骤不虚构任务详情', async () => {
+    const { channel, sent, emit } = setup()
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
     // 只跑工具、不说话：中间不产出任何消息。
@@ -604,12 +602,24 @@ describe('连发合并与失败反馈', () => {
     assert.deepEqual(sent.map(item => item.text), ['做完了。'])
   })
 
-  it('正常结束时不多嘴', async () => {
+  it('正常结束且有正文时不多嘴', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage())
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '好了。' }] } },
+    })
+    emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(sent.map(item => item.text), ['好了。'])
+  })
+
+  it('正常结束却没有任何正文时明确告知，不静默', async () => {
     const { channel, sent, emit } = setup()
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'turn/end', data: { reason: { kind: 'completed' } } })
     await new Promise(resolve => setTimeout(resolve, 20))
-    assert.equal(sent.length, 0)
+    assert.ok(sent.some(item => item.text.includes('没有生成可发送的回复')), JSON.stringify(sent))
   })
 })
 
@@ -626,7 +636,7 @@ describe('交付文件', () => {
       personas: new PersonaStore('/nonexistent'),
       defaultPersona: 'default',
       replies: new ReplyQueue({ send: async () => {}, sleep: async () => {}, sendFile: async (peerId, path, token) => { sentFiles.push({ peerId, paths: [path], token }) } }),
-      events, mergeWindowMs: 0, progressAfterMs: 0, cwd: '/work',
+      events, mergeWindowMs: 0, cwd: '/work',
     })
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', {
@@ -655,7 +665,6 @@ describe('交付文件', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      progressAfterMs: 0,
     })
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'deliverables/presented', data: { files: [{ path: '/a.docx' }] } })
@@ -682,7 +691,6 @@ describe('记忆标记', () => {
       report: () => {},
       sleep: async () => {},
       mergeWindowMs: 0,
-      progressAfterMs: 0,
       memory: {
         lineFor: () => undefined,
         get: () => [],
@@ -702,7 +710,7 @@ describe('记忆标记', () => {
 })
 
 describe('卡住与连续入站', () => {
-  function setup(options: { mergeWindowMs?: number; progressAfterMs?: number; stallAfterMs?: number; now?: () => number } = {}) {
+  function setup(options: { mergeWindowMs?: number; stallAfterMs?: number; now?: () => number } = {}) {
     const { sessions, delivered } = fakeSessions()
     const { events, emit } = fakeEvents()
     const sent: { peerId: string; text: string; token: string | undefined }[] = []
@@ -720,15 +728,14 @@ describe('卡住与连续入站', () => {
       report: (line, detail) => { reports.push({ line, detail }) },
       sleep: async () => {},
       mergeWindowMs: options.mergeWindowMs ?? 0,
-      progressAfterMs: options.progressAfterMs ?? 0,
-      stallAfterMs: options.stallAfterMs ?? 0,
+            stallAfterMs: options.stallAfterMs ?? 0,
       ...(options.now === undefined ? {} : { now: options.now }),
     })
     return { channel, delivered, sent, emit, reports }
   }
 
   it('单条长耗时：过程中保持沉默，正文到达后只发一次', async () => {
-    const { channel, sent, emit } = setup({ progressAfterMs: 30 })
+    const { channel, sent, emit } = setup()
     await channel.handle(userMessage())
     emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
     // 连续多个工具步骤，中间不产出任何内容。
@@ -768,6 +775,23 @@ describe('卡住与连续入站', () => {
     const texts = sent.map(item => item.text)
     assert.ok(texts.some(text => text.includes('第一轮的回答')), JSON.stringify(texts))
     assert.ok(texts.some(text => text.includes('第二轮的回答')), `第二轮被丢掉了：${JSON.stringify(texts)}`)
+  })
+
+
+  it('长任务期间来了新消息，后续进展用最新令牌发送', async () => {
+    const { channel, sent, emit } = setup()
+    await channel.handle(userMessage({ message_id: 'a', context_token: 'old-token' }))
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    // 模型还在跑时，用户又发了一条：这条带来新的 context_token。
+    await channel.handle(userMessage({ message_id: 'b', context_token: 'fresh-token', item_list: [{ type: 1, text_item: { text: '还在吗' } }] }))
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 2 } })
+    emit('channel-persona-wxid-owner', {
+      type: 'assistant/message',
+      data: { turn: 2, message: { content: [{ type: 'text', text: '接下来核对配置。' }, { type: 'tool-call', name: 'bash' }] } },
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const progress = sent.find(item => item.text.includes('接下来核对配置'))
+    assert.equal(progress?.token, 'fresh-token', JSON.stringify(sent))
   })
 
   it('回合结束时清空待认领集合，不靠额外的 user/message', async () => {

@@ -7,6 +7,8 @@
  * @module wechat-persona/persona/card
  */
 
+import { MAX_NOTICE_CHARS } from '../wechat/notices.ts'
+
 /** 人格的说话方式。三段分开存，是为了让 GUI 能逐段编辑而不互相覆盖。 */
 export interface PersonaPrompt {
   /** 立人设的一句话，写「你是谁」。 */
@@ -64,11 +66,10 @@ const MAX_ITEM_CHARS = 60
 const MAX_EXAMPLES = 5
 /** 报平安短句的上限：够多才不重复，太多则说明写宽了。 */
 const MAX_PROGRESS_LINES = 40
-const MAX_PROGRESS_CHARS = 20
 /**
  * 少于这个数就认为这套写得不够，退回内置库，并在卡上标一条提示。
  *
- * 这个下限**等于**当前的每轮配额：20 秒一句、窗口 200 秒 → ceil(200000/20000) = 10 条。
+ * 这个下限**等于**当前的每轮配额：60 秒一句、窗口 600 秒 → ceil(600000/60000) = 10 条。
  * 也就是说 10 条刚好够一轮不重复，一环之内不会重样。
  *
  * 但它是**跨轮**失效的：下一轮从同一批里重洗，同一个联系人连着跑两个长任务，
@@ -109,14 +110,14 @@ function readProgress(raw: unknown, warnings: CardIssue[]): string[] {
     const text = item.replace(/\s+/gu, ' ').trim()
     if (text === '') { dropped += 1; continue }
     const chars = Array.from(text)
-    const fitted = chars.length > MAX_PROGRESS_CHARS ? `${chars.slice(0, MAX_PROGRESS_CHARS - 1).join('')}…` : text
-    if (chars.length > MAX_PROGRESS_CHARS) clipped += 1
+    const fitted = chars.length > MAX_NOTICE_CHARS ? `${chars.slice(0, MAX_NOTICE_CHARS - 1).join('')}…` : text
+    if (chars.length > MAX_NOTICE_CHARS) clipped += 1
     if (seen.has(fitted)) { duplicated += 1; continue }
     seen.add(fitted)
     lines.push(fitted)
   }
   if (dropped > 0) warnings.push({ path: 'progress', message: `忽略了 ${String(dropped)} 条空串或非字符串`, severity: 'warn' })
-  if (clipped > 0) warnings.push({ path: 'progress', message: `${String(clipped)} 条超过 ${String(MAX_PROGRESS_CHARS)} 字，已截断`, severity: 'warn' })
+  if (clipped > 0) warnings.push({ path: 'progress', message: `${String(clipped)} 条超过 ${String(MAX_NOTICE_CHARS)} 字，已截断`, severity: 'warn' })
   if (duplicated > 0) warnings.push({ path: 'progress', message: `${String(duplicated)} 条重复，已合并`, severity: 'warn' })
   if (lines.length > MAX_PROGRESS_LINES) {
     warnings.push({ path: 'progress', message: `超过 ${String(MAX_PROGRESS_LINES)} 条，只保留前 ${String(MAX_PROGRESS_LINES)} 条`, severity: 'warn' })

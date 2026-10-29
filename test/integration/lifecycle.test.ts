@@ -44,7 +44,7 @@ async function fixture(t: TestContext, options: { channel?: Partial<ChannelOptio
   const channel = new Channel({ api: {} as ApiClient, account: { baseUrl: 'https://invalid', token: 'synthetic' }, sessions, history,
     access: createAccessPolicy({ allow: 'u1,u2' }), personas: new PersonaStore(join(root, 'personas')), defaultPersona: 'default', replies,
     events: { on: (_event, fn) => { listener = fn; return () => { listener = undefined } } },
-    generations: new PeerGenerations(join(root, 'generations.json')), mergeWindowMs: 0, progressAfterMs: 0, ...options.channel })
+    generations: new PeerGenerations(join(root, 'generations.json')), mergeWindowMs: 0, ...options.channel })
   let counter = 0
   async function send(text: string, peer = 'u1', items?: unknown[], receiveOnly = false) {
     await channel.handle({ message_id: String(++counter), from_user_id: peer, message_type: 1, context_token: `t${counter}`,
@@ -121,6 +121,57 @@ describe('对话生命周期', () => {
     const state = await f.channel.context('u1')
     assert.match(state, /unknown/); assert.match(state, /未送达/)
   })
+  it('发送失败会告知用户；重试只重发原回答，不重新运行模型', async t => {
+    let fail = true
+    const accepted: string[] = []
+    const f = await fixture(t, { queue: { send: async (_peer, text) => { if (fail && text === '保存好的回答') throw new Error('network'); accepted.push(text) }, maxAttempts: 1 } })
+    await f.send('你好'); f.answer('保存好的回答'); await f.channel.whenIdle()
+    assert.ok(accepted.some(text => text.includes('发送结果未确认')), JSON.stringify(accepted))
+    const modelCalls = f.delivered.length
+    fail = false
+    await f.send('重试'); await f.channel.whenIdle()
+    assert.equal(accepted.filter(text => text === '保存好的回答').length, 1)
+    assert.equal(f.delivered.length, modelCalls, '重试不得再投给模型')
+    assert.ok(accepted.some(text => text.includes('重新发送')), JSON.stringify(accepted))
+  })
+
+
+  it('重试只补发仍未确认的气泡，已补发成功的不再重复', async t => {
+    const accepted: string[] = []
+    let phase: 'initial' | 'retry' | 'done' = 'initial'
+    const f = await fixture(t, { queue: { maxAttempts: 1, send: async (_peer, text) => {
+      if (phase === 'initial') throw new Error('network')
+      if (phase === 'retry' && text === '第二段') throw new Error('network')
+      if (text === '第一段' || text === '第二段') accepted.push(text)
+    } } })
+    await f.send('你好'); f.answer('第一段[分条]第二段'); await f.channel.whenIdle()
+    assert.deepEqual(accepted, [])
+    phase = 'retry'
+    await f.send('重试'); await f.channel.whenIdle()
+    assert.deepEqual(accepted, ['第一段'])
+    phase = 'done'
+    await f.send('重试'); await f.channel.whenIdle()
+    assert.deepEqual(accepted, ['第一段', '第二段'], '第二次重试不该再发第一段')
+  })
+
+
+  it('回答与提示都被限流时，把失败写进上下文而不是静默', async t => {
+    const f = await fixture(t, { queue: {
+      maxAttempts: 1, maxThrottleAttempts: 1,
+      send: async () => { throw Object.assign(new Error('throttled'), { code: -2 }) },
+    } })
+    await f.send('你好'); f.answer('发不出去的回答'); await f.channel.whenIdle()
+    const state = await f.channel.context('u1')
+    assert.match(state, /发不出去的回答/, state)
+    assert.match(state, /未能送达用户的提示/, state)
+  })
+
+  it('没有可重试的回答时明确说明', async t => {
+    const f = await fixture(t)
+    await f.send('重试'); await f.channel.whenIdle()
+    assert.ok(f.sent.some(text => text.includes('没有需要重发')), JSON.stringify(f.sent))
+  })
+
   it('压缩等待不阻塞接收，停止能够取消压缩', async t => {
     const entered = gate(), cancelled = gate()
     const f = await fixture(t, { channel: { compact: async (_peer, _generation, signal) => { entered.resolve(); await new Promise<void>(resolve => { signal!.addEventListener('abort', () => { cancelled.resolve(); resolve() }, { once: true }) }); return { kind: 'cancelled' } } } })

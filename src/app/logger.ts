@@ -24,7 +24,7 @@ export interface FileLoggerOptions {
   /** 日志目录。 */
   dir: string
   /** 保留天数；0 表示不清理。 */
-  retentionDays?: number
+  retentionDays?: number | (() => number)
   /** 时钟，测试用。 */
   now?: () => Date
 }
@@ -55,7 +55,8 @@ export function createFileLogger(options: FileLoggerOptions): FileLogger {
   }
 
   async function prune(): Promise<void> {
-    const days = options.retentionDays ?? 7
+    const configured = typeof options.retentionDays === 'function' ? options.retentionDays() : options.retentionDays
+    const days = configured ?? 7
     if (days <= 0) return
     try {
       const cutoff = clock().getTime() - days * 24 * 60 * 60 * 1_000

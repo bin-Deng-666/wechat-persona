@@ -83,7 +83,7 @@ async function fixture(t: TestContext) {
     access: createAccessPolicy({ owner: 'u1' }), personas, settings, memory, stickers, defaultPersona: 'alpha', replies,
     generations: new PeerGenerations(join(root, 'generations.json')), prepareMedia,
     events: { on: (_event, next) => { listener = next; return () => { listener = undefined } } },
-    mergeWindowMs: 0, progressAfterMs: 0,
+    mergeWindowMs: 0,
   })
   let messageId = 0
   async function send(text: string, image = false) {

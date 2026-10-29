@@ -34,7 +34,7 @@ export interface QrCode {
  * @param raw - 响应文本。
  * @throws 缺 `qrcode` 或 `qrcode_img_content` 时抛错——半个二维码不可用。
  */
-export function parseQrResponse(raw: string): QrCode {
+function parseQrResponse(raw: string): QrCode {
   const parsed = JSON.parse(raw) as { qrcode?: unknown; qrcode_img_content?: unknown }
   if (typeof parsed.qrcode !== 'string' || parsed.qrcode === '') throw new Error('get_bot_qrcode 响应缺少 qrcode')
   if (typeof parsed.qrcode_img_content !== 'string') throw new Error('get_bot_qrcode 响应缺少 qrcode_img_content')

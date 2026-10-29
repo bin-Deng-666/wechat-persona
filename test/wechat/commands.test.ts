@@ -43,13 +43,14 @@ describe('parseCommand', () => {
     assert.deepEqual(parseCommand('新对话'), { name: 'new', args: [] })
     assert.deepEqual(parseCommand('压缩'), { name: 'compact', args: [] })
     assert.deepEqual(parseCommand('压缩对话'), { name: 'compact', args: [] })
+    assert.deepEqual(parseCommand('重试'), { name: 'retry', args: [] })
     assert.deepEqual(parseCommand('人格 jarvis'), { name: 'persona', args: ['jarvis'] })
     assert.equal(parseCommand('分条 按句'), undefined)
     assert.deepEqual(parseCommand('表情 收 狗头'), { name: '表情', args: ['收', '狗头'] })
   })
 
   it('提到设置和菜单的聊天不被吞成命令', () => {
-    for (const text of ['菜单怎么设计', '菜单 怎么设计', '帮我打开菜单', '设置 一下今天的计划', '表情 很有意思', '分条 帮我解释一下', '压缩 一下这个对话']) {
+    for (const text of ['菜单怎么设计', '菜单 怎么设计', '帮我打开菜单', '设置 一下今天的计划', '表情 很有意思', '分条 帮我解释一下', '压缩 一下这个对话', '重试 一下']) {
       assert.equal(parseCommand(text), undefined, text)
     }
   })
@@ -83,11 +84,11 @@ describe('文案', () => {
     assert.match(formatCompact({ kind: 'failed', message: '摘要过长' }), /摘要过长/)
   })
 
-  it('status 含人格、段数、条数、权限', () => {
+  it('status 含人格、段数、本次运行轮数、权限', () => {
     const text = formatStatus({ personaId: 'default', personaName: '小助手', generation: 1, turns: 12, permission: 'danger-full-access' })
     assert.match(text, /小助手（default）/)
     assert.match(text, /第 2 段/)
-    assert.match(text, /累计消息：12 条/)
+    assert.match(text, /本次运行已处理 12 轮/)
     assert.match(text, /danger-full-access/)
   })
 

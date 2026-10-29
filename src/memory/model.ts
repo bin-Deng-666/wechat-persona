@@ -3,20 +3,6 @@ import { createHash } from "node:crypto";
 
 export const TYPES = ["个人背景", "个人经历", "目标与方向", "观点与想法", "稳定偏好"] as const;
 export type MemoryType = (typeof TYPES)[number];
-export const TYPE_LABELS: Record<MemoryType, string> = {
-  个人背景: "Background",
-  个人经历: "Experiences",
-  目标与方向: "Goals & direction",
-  观点与想法: "Ideas & insights",
-  稳定偏好: "Preferences",
-};
-export const TYPE_FILES: Record<MemoryType, string> = {
-  个人背景: "background.json",
-  个人经历: "experiences.json",
-  目标与方向: "goals.json",
-  观点与想法: "ideas.json",
-  稳定偏好: "preferences.json",
-};
 export const CERTAINTY_LABELS = {
   明确: "Established",
   当前倾向: "Current inclination",
@@ -68,9 +54,6 @@ export interface State {
   memories: Memory[];
   suppressed: string[];
   scans: Record<string, Scan>;
-}
-export interface Settings {
-  enabled: boolean;
 }
 export const emptyState = (): State => ({
   schemaVersion: 1,

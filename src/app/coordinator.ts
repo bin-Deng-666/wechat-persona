@@ -125,7 +125,7 @@ export class Coordinator {
     // 聊天列表和最后活跃时间在重启后保留。
     this.activity = new PeerActivity(join(dataDir, 'last-seen.json'))
     this.memory = new PeerMemory(join(dataDir, 'memory'))
-    this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: config.logRetentionDays.get() })
+    this.fileLog = createFileLogger({ dir: join(dataDir, 'logs'), retentionDays: () => config.logRetentionDays.get() })
   }
 
   /** 启动时打一行：证明插件被加载了、用的是哪个目录。 */
@@ -281,7 +281,7 @@ export class Coordinator {
           // 已被 GUI 启动的会话不会执行 setup，也必须挂上当前通道的人设。
           if (handle.agent.ctx === undefined) throw new Error('宿主 agent 缺少会话作用域')
           prompts.install(handle.agent.ctx, handle.agent, peerId)
-          this.applyPermission(handle, preset)
+          this.applyPermission(handle, this.config.permission.get())
           void grouper.attach(String(handle.agent.id))
         },
         setup: async (agentCtx, agent, peerId) => {
@@ -307,6 +307,7 @@ export class Coordinator {
             text,
             clientId: context.clientId,
             signal: context.signal,
+            timeoutMs: 20_000,
             ...(contextToken === undefined ? {} : { contextToken }),
           })
         },
@@ -320,8 +321,8 @@ export class Coordinator {
           // The durable delivery outcome is shown to the next model request.
           // A direct fallback would bypass ordering and cancellation.
         },
-        // 1 秒是「同一条回复的相邻气泡」的节奏；真正的限流由 ret:-2 的退避兜住。
-        minIntervalMs: 1_000,
+        // 2 秒是线上验证过的保守节奏；密集报平安已移除，减少真正答案被限流的概率。
+        minIntervalMs: 2_000,
       })
 
       channel = new Channel({
@@ -335,12 +336,11 @@ export class Coordinator {
         settings: this.chatSettings,
         generations: this.generations,
         catalog: async () => await this.modelCatalog(),
-        permissionLabel: preset,
+        permissionLabel: this.config.permission.get(),
         activity: this.activity,
         memory: this.memory,
         cwd: this.config.cwd.get(),
         stickers: this.stickers,
-        sendSticker: async (peerId, stickerName, contextToken) => await this.sendSticker(peerId, stickerName, contextToken),
         typing,
         replies,
         events: this.ctx as never,
@@ -362,7 +362,7 @@ export class Coordinator {
         // 一轮跑完时会话一定已落盘，这时把它归入工作区最稳。
         onSessionSettled: sessionId => { void grouper.attach(sessionId) },
         // 调查协议未公开场景时打开：逐条记入站报文形状。
-        diagnoseMessages: this.config.diagnoseMessages.get(),
+        diagnoseMessages: () => this.config.diagnoseMessages.get(),
       })
       // 审批桥：把「要不要执行」发到微信，等一句 1/2。
       // 只有会话的审批策略是 ask 时才会被调用；danger-full-access 下服务端直接放行/拒绝。

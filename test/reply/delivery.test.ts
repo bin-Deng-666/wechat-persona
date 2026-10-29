@@ -45,6 +45,22 @@ describe('真实的交付结果与恢复', () => {
     assert.deepEqual(restored.deliveries.map(unit => unit.status), ['accepted', 'unknown', 'cancelled'])
     assert.deepEqual(sends, [])
   })
+  it('重试成功后原未确认单元被收口，不会再次补发', async t => {
+    const root = await mkdtemp(join(tmpdir(), 'wechat-outbox-')); t.after(async () => { await rm(root, { recursive: true, force: true }) })
+    const history = new ConversationStore(root)
+    await history.saveDelivery({ ...unit('unknown', 'a'), groupId: 'g1', value: '原回答' })
+    await history.saveDelivery({ ...unit('accepted', 'b'), groupId: 'g1', value: '后半句' })
+    let fail = true
+    const queue = new ReplyQueue({ history, send: async (_peer, text) => { if (fail) throw new Error('network') }, maxAttempts: 1 })
+    const first = await queue.enqueue('u1', '原回答', undefined, undefined, { groupId: 'g1' })
+    assert.equal(first.status, 'unknown')
+    fail = false
+    const retry = await queue.enqueue('u1', '原回答', undefined, undefined, { groupId: 'g1:retry:1' })
+    assert.equal(retry.status, 'accepted')
+    const state = await history.history('u1')
+    assert.equal(state.deliveries.find(item => item.id === 'a')?.status, 'unknown')
+    assert.equal(state.deliveries.find(item => item.id === 'b')?.status, 'accepted')
+  })
   it('前一条正在传输时，后一条排队消息也已持久化', async t => {
     const root = await mkdtemp(join(tmpdir(), 'wechat-outbox-')); t.after(async () => { await rm(root, { recursive: true, force: true }) })
     const history = new ConversationStore(root)

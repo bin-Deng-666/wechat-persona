@@ -24,19 +24,50 @@ export function normalizeStickerName(raw: string): string | undefined {
   return name === '' || name.length > 24 || /\s|[\x00-\x1f]/u.test(name) ? undefined : name
 }
 
+/** 回复里一段可发送的内容：文字或一张表情，顺序与原文一致。 */
+export type StickerSegment = { kind: 'text'; value: string } | { kind: 'sticker'; value: string }
+
+/**
+ * 把回复切成有序的文字/表情片段。
+ *
+ * 发送端必须按这个顺序逐段发出，所以这里是唯一的分词实现：
+ * 名字不合法（空、超长、含空格）时保留原文，避免把用户的字悄悄吃掉。
+ */
+export function splitStickerSegments(reply: string): StickerSegment[] {
+  const segments: StickerSegment[] = []
+  const pattern = /\[表情[:：]([^\]]*)\]/gu
+  let start = 0
+  for (const match of reply.matchAll(pattern)) {
+    const name = normalizeStickerName(match[1] ?? '')
+    if (name === undefined) continue
+    const before = reply.slice(start, match.index).trim()
+    if (before !== '') segments.push({ kind: 'text', value: before })
+    segments.push({ kind: 'sticker', value: name })
+    start = match.index + match[0].length
+  }
+  const rest = reply.slice(start).trim()
+  if (rest !== '') segments.push({ kind: 'text', value: rest })
+  return segments
+}
+
 export interface StickerToken { name: string; text: string }
+
+/** 第一条表情及其前后的文字；没有表情时返回 undefined。 */
 export function parseStickerToken(reply: string): StickerToken | undefined {
-  const match = /\[表情[:：]\s*([^\]\s]{1,24})\s*\]/u.exec(reply)
-  if (match?.[1] === undefined) return undefined
-  return { name: match[1], text: reply.replace(/\[表情[:：][^\]]*\]/gu, '').trim() }
+  const segments = splitStickerSegments(reply)
+  const first = segments.findIndex(segment => segment.kind === 'sticker')
+  if (first < 0) return undefined
+  const sticker = segments[first] as { kind: 'sticker'; value: string }
+  const text = segments.filter((segment, index) => index !== first && segment.kind === 'text')
+    .map(segment => segment.value).join(' ').trim()
+  return { name: sticker.value, text }
 }
 
 /** 一次回复里的全部表情标记；发送端要逐张发，不能只取第一张。 */
 export function parseStickerTokens(reply: string): { names: string[]; text: string } {
-  const names: string[] = []
-  const text = reply.replace(/\[表情[:：]\s*([^\]\s]{1,24})\s*\]/gu, (_whole, name: string) => {
-    names.push(name)
-    return ''
-  }).trim()
-  return { names, text }
+  const segments = splitStickerSegments(reply)
+  return {
+    names: segments.filter(segment => segment.kind === 'sticker').map(segment => segment.value),
+    text: segments.filter(segment => segment.kind === 'text').map(segment => segment.value).join(' ').trim(),
+  }
 }

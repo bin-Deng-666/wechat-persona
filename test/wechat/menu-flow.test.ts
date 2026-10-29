@@ -1,12 +1,12 @@
 /** 用真实通道、持久化设置和发送队列验证微信菜单交互。 */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { it, type TestContext } from 'node:test'
 import { Channel, type ChannelOptions } from '../../src/wechat/channel.ts'
 import { createAccessPolicy } from '../../src/wechat/access.ts'
-import { PersonaStore, seedDefaultPersona } from '../../src/persona/store.ts'
+import { BUILTIN_DEFAULT, PersonaStore, seedDefaultPersona } from '../../src/persona/store.ts'
 import { ChatSettingsStore } from '../../src/chat/settings.ts'
 import { PeerGenerations } from '../../src/chat/generations.ts'
 import { ReplyQueue } from '../../src/reply/queue.ts'
@@ -28,7 +28,7 @@ async function setup(t: TestContext, extra: Partial<ChannelOptions> = {}) {
     replies: new ReplyQueue({ send: async (peer, text, token) => { sent.push({ peer, text, token }) }, sleep: async () => {} }),
     events: { on: () => () => {} }, settings, generations,
     memory: memory as unknown as ChannelOptions['memory'],
-    mergeWindowMs: 0, progressAfterMs: 0, now: () => now, ...extra,
+    mergeWindowMs: 0, now: () => now, ...extra,
   })
   t.after(async () => { await channel.stop(); await rm(root, { force: true, recursive: true }) })
   const send = async (text: string, peer = 'owner') => {
@@ -36,7 +36,7 @@ async function setup(t: TestContext, extra: Partial<ChannelOptions> = {}) {
     await channel.handle({ message_id: id, from_user_id: peer, message_type: 1, context_token: id, item_list: [{ type: 1, text_item: { text } }] })
     await channel.whenIdle()
   }
-  return { channel, send, sent, settings, delivered, memory, generations, tick: (ms: number) => { now += ms }, cleared: () => cleared }
+  return { channel, send, sent, settings, delivered, memory, generations, personaRoot: join(root, 'personas'), tick: (ms: number) => { now += ms }, cleared: () => cleared }
 }
 
 it('中文入口、逐级返回与关闭都在微信内完成', async t => {
@@ -106,7 +106,7 @@ it('菜单和帮助整条显示，沿用本条消息的回复令牌', async t =>
   assert.doesNotMatch(f.sent[1]!.text, /分条|网页|小程序/)
 })
 
-it('设置里可以平铺换模型，换完自动开新一段会话', async t => {
+it('宿主不支持热切时，换模型回退到新一段会话', async t => {
   const catalog = async () => ({
     choices: [
       { provider: 'deepseek-account', model: 'deepseek-flash' },
@@ -119,9 +119,10 @@ it('设置里可以平铺换模型，换完自动开新一段会话', async t =>
   assert.match(f.sent.at(-1)!.text, /2  换模型 · deepseek-account\/deepseek-flash/)
   await f.send('2')
   assert.match(f.sent.at(-1)!.text, /🤖 换模型/)
-  assert.match(f.sent.at(-1)!.text, /1  deepseek-account\/deepseek-flash  ✓/)
-  assert.match(f.sent.at(-1)!.text, /2  workbuddy\/glm-5\.3/)
-  await f.send('2')
+  assert.match(f.sent.at(-1)!.text, /1  跟随 DSH 默认/)
+  assert.match(f.sent.at(-1)!.text, /2  deepseek-account\/deepseek-flash  ✓/)
+  assert.match(f.sent.at(-1)!.text, /3  workbuddy\/glm-5\.3/)
+  await f.send('3')
   assert.deepEqual((await f.settings.get('owner')).model, { provider: 'workbuddy', model: 'glm-5.3' })
   assert.match(f.sent.at(-1)!.text, /已换到 workbuddy\/glm-5\.3/)
   assert.match(f.sent.at(-1)!.text, /第 2 段/)
@@ -130,15 +131,144 @@ it('设置里可以平铺换模型，换完自动开新一段会话', async t =>
   assert.match(f.sent.at(-1)!.text, /2  换模型 · workbuddy\/glm-5\.3/)
 })
 
-it('重复选中同一个模型只回一句，不重开会话', async t => {
+
+it('宿主支持时会话内换模型，不重开会话也不丢上下文', async t => {
+  const catalog = async () => ({
+    choices: [
+      { provider: 'deepseek-account', model: 'deepseek-flash' },
+      { provider: 'workbuddy', model: 'glm-5.3' },
+    ],
+    current: { provider: 'deepseek-account', model: 'deepseek-flash' },
+  })
+  const switched: { peerId: string; generation: number; provider: string; model: string }[] = []
+  const f = await setup(t, {
+    catalog,
+    sessions: {
+      deliver: async () => {},
+      selectModel: async (peerId: string, generation: number, choice: { provider: string; model: string }) => {
+        switched.push({ peerId, generation, ...choice })
+        return true
+      },
+    } as unknown as ChannelOptions['sessions'],
+  })
+  await f.send('设置')
+  await f.send('2')
+  await f.send('3')
+  assert.deepEqual(switched, [{ peerId: 'owner', generation: 0, provider: 'workbuddy', model: 'glm-5.3' }])
+  assert.match(f.sent.at(-1)!.text, /已换到 workbuddy\/glm-5\.3/)
+  assert.doesNotMatch(f.sent.at(-1)!.text, /第 2 段/)
+  assert.equal(await f.generations.get('owner'), 0)
+})
+
+it('重复选中实际生效的目录默认模型只回一句，不重开会话', async t => {
   const catalog = async () => ({ choices: [{ provider: 'workbuddy', model: 'glm-5.3' }], current: { provider: 'workbuddy', model: 'glm-5.3' } })
+  const f = await setup(t, { catalog })
+  assert.equal((await f.settings.get('owner')).model, undefined)
+  await f.send('设置')
+  await f.send('2')
+  await f.send('2')
+  assert.match(f.sent.at(-1)!.text, /现在用的就是 workbuddy\/glm-5\.3/)
+  assert.equal(await f.generations.get('owner'), 0)
+  assert.equal((await f.settings.get('owner')).model, undefined)
+})
+
+it('不支持热切时，跟随默认只清覆盖并如实说明下一段生效', async t => {
+  const catalog = async () => ({ choices: [{ provider: 'workbuddy', model: 'glm-5.3' }], current: { provider: 'deepseek-account', model: 'deepseek-flash' } })
   const f = await setup(t, { catalog })
   await f.settings.update('owner', current => ({ ...current, model: { provider: 'workbuddy', model: 'glm-5.3' } }))
   await f.send('设置')
   await f.send('2')
   await f.send('1')
-  assert.match(f.sent.at(-1)!.text, /现在用的就是 workbuddy\/glm-5\.3/)
+  const settings = await f.settings.get('owner')
+  assert.equal(settings.model, undefined)
+  assert.equal(settings.enabled, true)
+  // 这个夹具没有会话内切换能力：必须如实说明当前会话仍用原模型。
+  assert.match(f.sent.at(-1)!.text, /已清除联系人的模型设置/)
+  assert.match(f.sent.at(-1)!.text, /下一段会话生效/)
   assert.equal(await f.generations.get('owner'), 0)
+  await f.send('设置')
+  assert.match(f.sent.at(-1)!.text, /2  换模型 · deepseek-account\/deepseek-flash/)
+})
+
+
+it('能热切时“跟随 DSH 默认”立即生效，并保留上下文', async t => {
+  const catalog = async () => ({
+    choices: [{ provider: 'workbuddy', model: 'glm-5.3' }],
+    current: { provider: 'deepseek-account', model: 'deepseek-flash' },
+  })
+  const switched: { provider: string; model: string }[] = []
+  const f = await setup(t, {
+    catalog,
+    sessions: {
+      deliver: async () => {},
+      selectModel: async (_peer: string, _generation: number, choice: { provider: string; model: string }) => {
+        switched.push(choice)
+        return true
+      },
+    } as unknown as ChannelOptions['sessions'],
+  })
+  await f.settings.update('owner', current => ({ ...current, model: { provider: 'workbuddy', model: 'glm-5.3' } }))
+  await f.send('设置')
+  await f.send('2')
+  await f.send('1')
+  assert.deepEqual(switched, [{ provider: 'deepseek-account', model: 'deepseek-flash' }])
+  assert.match(f.sent.at(-1)!.text, /已设为跟随 DSH 默认/)
+  assert.match(f.sent.at(-1)!.text, /上下文继续保留/)
+  assert.equal((await f.settings.get('owner')).model, undefined)
+  assert.equal(await f.generations.get('owner'), 0)
+})
+
+it('长模型列表可以双向翻页，未知数字重发当前页，普通聊天不吞消息', async t => {
+  const catalog = async () => ({
+    choices: Array.from({ length: 18 }, (_, i) => ({ provider: 'workbuddy', model: `m-${i}` })),
+    current: { provider: 'workbuddy', model: 'm-0' },
+  })
+  const f = await setup(t, { catalog })
+  await f.send('设置')
+  await f.send('2')
+  assert.match(f.sent.at(-1)!.text, /第 1\/3 页/)
+  await f.send('8')
+  assert.match(f.sent.at(-1)!.text, /第 2\/3 页/)
+  assert.match(f.sent.at(-1)!.text, /1  workbuddy\/m-6/)
+  await f.send('8')
+  assert.match(f.sent.at(-1)!.text, /第 3\/3 页/)
+  assert.match(f.sent.at(-1)!.text, /1  workbuddy\/m-13/)
+  await f.send('8')
+  assert.match(f.sent.at(-1)!.text, /第 3\/3 页/)
+  assert.match(f.sent.at(-1)!.text, /没有下一页/)
+  await f.send('5')
+  assert.deepEqual((await f.settings.get('owner')).model, { provider: 'workbuddy', model: 'm-17' })
+  assert.equal(await f.generations.get('owner'), 1)
+  await f.send('设置')
+  await f.send('2')
+  await f.send('8')
+  await f.send('9')
+  assert.match(f.sent.at(-1)!.text, /第 1\/3 页/)
+  await f.send('9')
+  assert.match(f.sent.at(-1)!.text, /第 1\/3 页/)
+  assert.match(f.sent.at(-1)!.text, /没有上一页/)
+  await f.send('随便聊聊')
+  assert.deepEqual(f.delivered, ['随便聊聊'])
+})
+
+it('超过九项的人格可以翻页选择，翻页编号不会误选人格', async t => {
+  const f = await setup(t)
+  for (let i = 0; i < 11; i++) {
+    const id = `persona-${String(i).padStart(2, '0')}`
+    await mkdir(join(f.personaRoot, id), { recursive: true })
+    await writeFile(join(f.personaRoot, id, 'persona.json'), JSON.stringify({ ...BUILTIN_DEFAULT, id, name: `人格 ${String(i).padStart(2, '0')}` }))
+  }
+  await f.send('人格')
+  assert.match(f.sent.at(-1)!.text, /第 1\/2 页/)
+  assert.doesNotMatch(f.sent.at(-1)!.text, /人格 07/)
+  await f.send('8')
+  assert.match(f.sent.at(-1)!.text, /第 2\/2 页/)
+  assert.match(f.sent.at(-1)!.text, /1  人格 06/)
+  await f.send('1')
+  assert.equal((await f.settings.get('owner')).personaId, 'persona-06')
+  assert.match(f.sent.at(-1)!.text, /已切到「人格 06」/)
+  await f.send('9')
+  assert.deepEqual(f.delivered, ['9'])
 })
 
 it('没有模型目录时设置里仍可打开，但只给出说明', async t => {

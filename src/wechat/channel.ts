@@ -16,7 +16,7 @@ import type { ModelCatalog } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
 import type { ReplyQueue, DeliveryReport } from '../reply/queue.ts'
-import { extractAssistantText } from '../dsh/events.ts'
+import { extractAssistantText, extractProgressText, extractToolName } from '../dsh/events.ts'
 import { PeerSessions, sessionIdFor } from '../dsh/sessions.ts'
 import { PersonaStore } from '../persona/store.ts'
 import { DEFAULT_CHAT_SETTINGS, type ChatSettings, type ChatSettingsStore } from '../chat/settings.ts'
@@ -32,16 +32,18 @@ import type { MemoryActivity } from '../memory/capture.ts'
 export interface ChannelAccount { baseUrl: string; token: string; userId?: string }
 export interface SessionEventsLike { on(event: 'session/event', listener: (session: { id: unknown }, event: unknown) => void): () => void }
 /**
- * 报平安的默认节奏：20 秒一句，最多持续 200 秒。
+ * 报平安的默认节奏：60 秒一句，最多持续 600 秒。
  *
- * 这两个数不是随手定的：20 秒 × 10 = 200 秒，正好等于人格卡要求的最小文案条数
+ * 这两个数不是随手定的：60 秒 × 10 = 600 秒，正好等于人格卡要求的最小文案条数
  * （`persona/card.ts` 的 `MIN_PROGRESS_LINES`）。一轮用完不重样，下一轮才重新洗牌。
  *
  * ⚠️ 改这两个值之前先读 `test/wechat/notices.test.ts` 里的配额断言：它会拦住
  * 「一轮配额超过文案条数」的改法，否则用户会在一轮里看到重复的句子。
  */
-export const DEFAULT_NOTICE_INTERVAL_MS = 20_000
-export const DEFAULT_NOTICE_WINDOW_MS = 200_000
+export const DEFAULT_NOTICE_INTERVAL_MS = 60_000
+export const DEFAULT_NOTICE_WINDOW_MS = 600_000
+const PROGRESS_MIN_GAP_MS = 4_000
+const TOOL_PROGRESS_AFTER_MS = 15_000
 
 export interface ChannelOptions {
   api: ApiClient
@@ -67,34 +69,32 @@ export interface ChannelOptions {
   /** 一轮结束时把会话 id 交给宿主（用于归入工作区）；缺失表示不需要。 */
   onSessionSettled?: (sessionId: string) => void
   /** 逐条记录入站报文形状；用来调查协议未公开场景（例如群聊）。 */
-  diagnoseMessages?: boolean
+  diagnoseMessages?: boolean | (() => boolean)
   permissionLabel?: string
   typing?: { start: (peerId: string, contextToken?: string) => Promise<unknown>; stop: (peerId: string) => Promise<unknown> }
   approvals?: { answer: (peerId: string, text: string) => boolean; cancel: (peerId: string, why?: string) => void }
   cwd?: string
-  sendSticker?: (peerId: string, name: string, contextToken: string | undefined) => Promise<boolean>
   prepareMedia?: (items: readonly MessageItem[], peerId?: string, signal?: AbortSignal) => Promise<PreparedMedia>
   activity?: ActivityStore
   memory?: PeerMemory
   stickers?: Pick<StickerLibrary, 'names' | 'annotate' | 'adoptLatest'>
   mergeWindowMs?: number
-  progressAfterMs?: number
   /** 交给宿主后多久仍无进展就主动告知用户；0 关闭。 */
   stallAfterMs?: number
   /**
-   * 干活期间隔多久报一句平安，毫秒；默认 20_000，0 关闭。
+   * 干活期间隔多久报一句平安，毫秒；默认 60_000，0 关闭。
    *
    * 报平安的句子来自人格卡的 `progress`，没写就用内置库。
    */
   noticeIntervalMs?: number
   /**
-   * 报平安最多持续多久（从交给宿主算起），默认 200 秒。
+   * 报平安最多持续多久（从交给宿主算起），默认 600 秒。
    *
    * 这是「一轮上限」的来源：上限 = ceil(窗口 / 间隔)，跟着节奏一起变，
    * 而不是另写一个死数字——改间隔时不会立刻把配额打满。
    * 超过窗口就安静下来，长任务交给卡住看门狗兜底。
    *
-   * 默认值和人格卡的 10 条文案是一对：20 秒 × 10 = 200 秒，
+   * 默认值和人格卡的 10 条文案是一对：60 秒 × 10 = 600 秒，
    * 正好一轮用完不重样。改这里要看 `persona/card.ts` 的 `MIN_PROGRESS_LINES`。
    */
   noticeWindowMs?: number
@@ -115,10 +115,13 @@ export class Channel {
   private readonly jobs = new Set<Promise<unknown>>()
   private readonly eventWork = new Map<string, SerialWork>()
   private eventQueue(peerId: string): SerialWork { let queue = this.eventWork.get(peerId); if (!queue) { queue = new SerialWork(); this.eventWork.set(peerId, queue) } return queue }
-  private readonly progress = new Map<string, NodeJS.Timeout>()
   private readonly stalls = new Map<string, NodeJS.Timeout>()
   /** 每个联系人干活期间「报平安」的定时器与取句器。 */
   private readonly notices = new Map<string, { timer: NodeJS.Timeout; activityId: string; next: () => string | undefined; sent: number; deadline: number }>()
+  /** 同一轮相同旁白只发一次；过短的两条更新合并时间，避免工具步骤刷屏。 */
+  private readonly progressUpdates = new Map<string, { text: string; at: number }>()
+  private readonly toolUpdates = new Map<string, { name: string; at: number }>()
+  private readonly deliveryWarnings = new Set<string>()
   /** 每个联系人当前该用哪套句子；在解析人格卡时写入。 */
   private readonly noticeLines = new Map<string, readonly string[]>()
   private readonly turnCounts = new Map<string, number>()
@@ -145,9 +148,16 @@ export class Channel {
       runBackground: task => { this.track(task) },
       turnsFor: peer => this.turnCounts.get(peer) ?? 0,
       cancelTurn: async peer => await this.stopConversation(await this.conversation(peer)),
+      retryDelivery: async peer => await this.retryDelivery(peer),
+      selectModel: async (peer, generation, choice) => await this.selectModel(peer, generation, choice),
       newConversation: async peer => await this.newConversation(await this.conversation(peer)),
       compactConversation: async peer => await this.compactConversation(await this.conversation(peer)),
-      sendSticker: async (peer, name, token) => (await options.replies.enqueue(peer, `[表情:${name}]`, token, undefined, { immediate: true })).status === 'accepted',
+      sendSticker: async (peer, name, token) => {
+        const report = await options.replies.enqueue(peer, `[表情:${name}]`, token, undefined, { immediate: true })
+        if (report.status === 'accepted') return true
+        if (report.status === 'failed' && report.units.every(unit => unit.error === '表情不存在或不可发送')) return false
+        return report.status === 'unknown' ? 'unknown' : 'failed'
+      },
     })
   }
   private conversation(peerId: string): Promise<PeerConversation> {
@@ -202,7 +212,7 @@ export class Channel {
       this.options.report?.('忽略了一条无法识别的入站报文', { raw: summarizeRaw(raw) })
       return
     }
-    const verbose = this.options.diagnoseMessages === true
+    const verbose = typeof this.options.diagnoseMessages === 'function' ? this.options.diagnoseMessages() : this.options.diagnoseMessages === true
     if (needsDiagnosis(shape, verbose)) this.options.report?.('入站报文形状', shape)
     const message = asWeixinMessage(raw)
     if (!message || (message.message_type !== undefined && message.message_type !== 1)) {
@@ -420,6 +430,17 @@ export class Channel {
     await this.history.notice(conversation.peerId, '用户停止了当前任务和未发送内容')
     return active || output || cancelled || pending.length > 0
   }
+  /** 会话内热切换模型；宿主或会话不支持时返回 false，让设置页回退到新会话。 */
+  private async selectModel(peerId: string, generation: number, choice: { provider: string; model: string }): Promise<boolean> {
+    if (this.options.sessions.selectModel === undefined) return false
+    try {
+      return await this.options.sessions.selectModel(peerId, generation, choice)
+    } catch (error) {
+      this.options.report?.('会话内切换模型失败', { peerId, error: String(error) })
+      return false
+    }
+  }
+
   private async newConversation(conversation: PeerConversation): Promise<number> {
     await this.stopConversation(conversation)
     if (!this.options.generations) throw new Error('这个部署没有开启多段对话')
@@ -435,16 +456,102 @@ export class Channel {
     try { return await this.options.compact(conversation.peerId, conversation.generation, activity.signal) }
     finally { if (!activity.signal.aborted) activity.phase = 'idle' }
   }
-  private notice(conversation: PeerConversation, text: string, activity?: ConversationActivity): void {
+  private notice(conversation: PeerConversation, text: string, activity?: ConversationActivity, urgent = false): void {
     const plan = this.plans.get(conversation.peerId) ?? DEFAULT_REPLY_PLAN
     const scope = activity ? conversation.scope(activity) : conversation.controlScope()
-    const token = activity?.contextToken ?? this.contextTokens.get(conversation.peerId)
     this.track(this.eventQueue(conversation.peerId).run(async () => {
       if (scope?.signal?.aborted) return
-      this.track(this.options.replies.enqueue(conversation.peerId, text, token, { ...plan, splitMode: 'none' }, { immediate: true, scope }))
+      // 真正发送时再取令牌：排队期间来了新消息，就用新的，别拿几分钟前的。
+      const token = () => this.contextTokens.get(conversation.peerId) ?? activity?.contextToken
+      const delivery = this.options.replies.enqueue(conversation.peerId, text, token, { ...plan, splitMode: 'none' }, { immediate: true, scope, urgent })
+      if (urgent) {
+        // 关键提示若最终没发出去，写进持久上下文：下一次对话由模型自然带出，而不是彻底静默。
+        this.track(delivery.then(async report => {
+          if (report.status === 'accepted') return
+          await this.history.notice(conversation.peerId, `未能送达用户的提示：${text}`)
+        }))
+        return
+      }
+      this.track(delivery)
     }))
   }
-  private clearProgress(peerId: string): void { const timer = this.progress.get(peerId); if (timer) clearTimeout(timer); this.progress.delete(peerId) }
+  private clearProgress(peerId: string): void {
+    this.progressUpdates.delete(peerId)
+    this.toolUpdates.delete(peerId)
+  }
+
+  /** 发送真实阶段说明，不再拿随机短句冒充任务进展。 */
+  private progressNotice(conversation: PeerConversation, activity: ConversationActivity, text: string): void {
+    const now = (this.options.now ?? Date.now)()
+    const previous = this.progressUpdates.get(conversation.peerId)
+    if (previous?.text === text || (previous !== undefined && now - previous.at < PROGRESS_MIN_GAP_MS)) return
+    this.progressUpdates.set(conversation.peerId, { text, at: now })
+    this.notice(conversation, text, activity)
+    // 有实质内容时停止空泛的报平安；后续仍无正文则由低频兜底接管。
+    this.stopNotices(conversation.peerId)
+    this.startNotices(conversation, activity)
+  }
+
+  /** 工具事件仅用于没有旁白时的低频心跳，不公开参数、路径或输出。 */
+  private toolProgress(conversation: PeerConversation, activity: ConversationActivity, name: string): void {
+    const now = (this.options.now ?? Date.now)()
+    const previous = this.toolUpdates.get(conversation.peerId)
+    if (previous !== undefined && (previous.name !== name || now - previous.at < TOOL_PROGRESS_AFTER_MS)) return
+    this.toolUpdates.set(conversation.peerId, { name, at: now })
+    this.progressNotice(conversation, activity, `正在执行 ${name}，有结果我会继续告诉你。`)
+  }
+
+  private failureFeedback(conversation: PeerConversation, activity: ConversationActivity, report: DeliveryReport): void {
+    if (report.status === 'accepted' || report.status === 'cancelled') return
+    // 表情库里没有这张图是本地可判定的事实，正文已经按纯文字继续发出，不再额外告警。
+    const unresolved = report.units.filter(unit => unit.status === 'failed' || unit.status === 'unknown')
+    if (unresolved.length > 0 && unresolved.every(unit => unit.kind === 'sticker' && unit.error === '表情不存在或不可发送')) return
+    const activityId = report.units[0]?.activityId ?? activity.id
+    if (this.deliveryWarnings.has(activityId)) return
+    this.deliveryWarnings.add(activityId)
+    // 回答所属作用域可能已被补充消息作废；反馈是新的控制消息，走独立作用域。
+    const text = report.status === 'partial'
+      ? '这条回复只发出了一部分。发送「重试」可以补发未确认的内容。'
+      : report.status === 'unknown'
+        ? '回复已生成，但发送结果未确认。发送「重试」可以重新发送。'
+        : '回复已生成，但没有发送成功。发送「重试」可以重新发送。'
+    this.notice(conversation, text, undefined, true)
+  }
+
+  /** 只重投已保存的未确认内容；不重新运行模型或工具，使用最新入站令牌。 */
+  private async retryDelivery(peerId: string): Promise<'idle' | 'retried' | 'failed'> {
+    const conversation = await this.conversation(peerId)
+    const history = await this.history.history(peerId)
+    // 只考虑真正的内容单元：菜单、提示和反馈也走队列，但它们不是可重发的回答。
+    const candidates = history.deliveries.filter(unit => unit.generation === conversation.generation
+      && (unit.status === 'failed' || unit.status === 'unknown')
+      && !unit.activityId.startsWith('control:'))
+    if (!candidates.length) return 'idle'
+    // 只补发最近一组未确认内容；已经接受的气泡不重复发送。
+    // 组内后续单元可能因前一项失败被标成 cancelled，它们也属于“还没发出去”的内容。
+    const latest = candidates.at(-1)!
+    const group = history.deliveries.filter(unit => unit.groupId === latest.groupId
+      && (unit.status === 'failed' || unit.status === 'unknown' || (unit.status === 'cancelled' && unit.error === '前一条未发出，已取消')))
+      // 本地已判定不存在的表情不必再试；否则它会永远挡着同一组里的文字。
+      .filter(unit => unit.error !== '表情不存在或不可发送')
+    if (!group.length) return 'idle'
+    const token = () => this.contextTokens.get(peerId) ?? latest.contextToken
+    const attempt = `${String(Date.now())}`
+    // 补发内容仍是“回答”，不能用 control 作用域，否则会被下次重试当成提示排除。
+    const scope = { ...conversation.controlScope(), activityId: `retry:${attempt}` }
+    this.deliveryWarnings.delete(latest.activityId)
+    for (const [index, unit] of group.entries()) {
+      const plan = { ...DEFAULT_REPLY_PLAN, splitMode: 'none' as const }
+      const retryGroup = `${unit.groupId}:retry:${attempt}:${String(index)}`
+      const report = unit.kind === 'file'
+        ? await this.options.replies.enqueueFiles(peerId, [unit.value], token, scope, retryGroup)
+        : await this.options.replies.enqueue(peerId, unit.kind === 'sticker' ? `[表情:${unit.value}]` : unit.value, token, plan, { scope, groupId: retryGroup })
+      // 原记录一律收口：失败时由新的重试记录继续承担，避免下一次重试又挑中旧记录。
+      await this.history.saveDelivery({ ...unit, status: 'cancelled', error: '已转由重试记录' })
+      if (report.status !== 'accepted') return 'failed'
+    }
+    return 'retried'
+  }
 
   /**
    * 干活期间每隔一段时间报一句平安。
@@ -472,7 +579,7 @@ export class Channel {
       sent: sameRound ? existing.sent : 0,
       deadline: now + window,
     }
-    // 上限由窗口推导：20 秒间隔、200 秒窗口 = 最多 10 条。
+    // 上限由窗口推导：60 秒间隔、600 秒窗口 = 最多 10 条。
     // ⚠️ 与 `persona/card.ts` 的 MIN_PROGRESS_LINES 是同一对约束：人格卡至少要写够
     // 这么多条才能保证一轮内不重复。调大窗口（或调小间隔）会让配额超过 10，
     // 那时必须同步上调那个下限，否则一轮内会开始重样。
@@ -536,6 +643,10 @@ export class Channel {
       // 待认领集合会在 turn/start 与 turn/end 清空，所以它不会永久把输出卡死。
       if (turn !== undefined && activity.pendingMessages.size > 0) return
       if (event.type === 'deliverables/presented') { this.present(conversation, activity, data, event); return }
+      const progress = extractProgressText(event)
+      if (progress !== undefined) this.progressNotice(conversation, activity, progress)
+      const toolName = extractToolName(event)
+      if (toolName !== undefined) this.toolProgress(conversation, activity, toolName)
       const text = extractAssistantText(event)
       if (text === undefined) return
       this.clearProgress(conversation.peerId)
@@ -543,7 +654,6 @@ export class Channel {
       conversation.markFirstText((this.options.now ?? Date.now)())
       this.reportLeg(conversation.peerId, 'first-text', activity)
       const scope = conversation.scope(activity)
-      const token = activity.contextToken
       const groupId = `${String(session.id)}:${isRecord(data.message) && typeof data.message.id === 'string' ? data.message.id : event.seq ?? `${activity.id}:${turn ?? ''}:${data.step ?? ''}:${createHash('sha256').update(text).digest('hex')}`}`
       this.track(this.eventQueue(conversation.peerId).run(async () => {
         const old = (await this.history.history(conversation.peerId)).deliveries
@@ -552,8 +662,10 @@ export class Channel {
         const classified = extractStickerAnnotations(text.replace(/\[记住[:：][^\]\n]*\]/gu, ''))
         await this.options.stickers?.annotate(conversation.peerId, classified.annotations)
         if (scope?.signal?.aborted) return
+        // 长任务可能跑了几分钟；每次尝试都取这期间最新收到的令牌。
+        const token = () => this.contextTokens.get(conversation.peerId) ?? activity.contextToken
         this.track(this.options.replies.enqueue(conversation.peerId, expandLocationTokens(classified.text), token, this.plans.get(conversation.peerId), { scope, groupId })
-          .then(report => { this.reportDelivery(conversation.peerId, report) }))
+          .then(report => { this.reportDelivery(conversation.peerId, report); this.failureFeedback(conversation, activity, report) }))
       }))
     })
   }
@@ -561,13 +673,15 @@ export class Channel {
     const paths = Array.isArray(data.files) ? data.files.flatMap(file => isRecord(file) && typeof file.path === 'string' ? [isAbsolute(file.path) ? file.path : resolve(this.options.cwd ?? '.', file.path)] : []) : []
     if (!paths.length) return
     this.clearProgress(conversation.peerId)
-    const token = activity.contextToken, scope = conversation.scope(activity)
+    conversation.markFirstText((this.options.now ?? Date.now)())
+    const scope = conversation.scope(activity)
     this.track(this.eventQueue(conversation.peerId).run(async () => {
       if (scope?.signal?.aborted) return
       const groupId = `${sessionIdFor(conversation.peerId, conversation.generation)}:files:${event.seq ?? `${activity.id}:${createHash('sha256').update(JSON.stringify(paths)).digest('hex')}`}`
       if ((await this.history.history(conversation.peerId)).deliveries.some(unit => unit.groupId === groupId)) return
+      const token = () => this.contextTokens.get(conversation.peerId) ?? activity.contextToken
       this.track(this.options.replies.enqueueFiles(conversation.peerId, paths, token, scope, groupId)
-        .then(report => { this.reportDelivery(conversation.peerId, report); if (report.status === 'failed' || report.status === 'unknown') this.notice(conversation, '文件未确认发出，可以让我重试。', activity) }))
+        .then(report => { this.reportDelivery(conversation.peerId, report); if (report.status === 'failed' || report.status === 'unknown') this.notice(conversation, '文件未确认发出，可以让我重试。') }))
     }))
   }
   private reportDelivery(peerId: string, report: DeliveryReport): void {
@@ -582,10 +696,20 @@ export class Channel {
     this.clearProgress(conversation.peerId); this.options.approvals?.cancel(conversation.peerId)
     const data = isRecord(event.data) ? event.data : {}, reason = isRecord(data.reason) ? data.reason : {}
     switch (reason.kind) {
-      case 'error': this.notice(conversation, '这一轮没完成，消息和已完成的步骤仍然保留。可以让我重试。', activity); break
+      case 'error': {
+        const error = isRecord(reason.error) ? reason.error : {}
+        const message = typeof error.message === 'string' ? error.message : ''
+        const brief = message.length > 300 ? `${message.slice(0, 300)}…` : message
+        this.notice(conversation, brief === '' ? '这一轮没完成，可以让我重试。' : `模型或服务暂时出错了：${brief}\n可以重试，或在「设置」里换模型。`, activity)
+        break
+      }
       case 'blocked': this.notice(conversation, '这段会话暂时无法继续，可以发“新对话”重新开始。', activity); break
       case 'max-tokens': this.notice(conversation, '回答达到长度上限，可以让我接着说。', activity); break
       case 'aborted': this.notice(conversation, '这一轮已中断。', activity); break
+      case 'completed':
+        // 正常结束却没有正文或文件：不能让用户对着一片空白等。
+        if (activity.at.firstText === undefined) this.notice(conversation, '这一轮结束了，但没有生成可发送的回复。可以让我重试，或换个说法再问一次。', activity)
+        break
     }
   }
   memoryActivity(peerId: string): MemoryActivity | undefined {

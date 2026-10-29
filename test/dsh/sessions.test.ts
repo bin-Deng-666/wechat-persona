@@ -103,6 +103,51 @@ describe('PeerSessions', () => {
     assert.equal(handle.agent.id, sessionIdFor('u1'))
   })
 
+
+  it('会话内切换模型只改下一轮，不重建会话', async () => {
+    const fake = fakeRegistry()
+    const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work' })
+    // 夹具的 agentCtx 不是真实 Cordis 上下文，用一个最小的 on() 让选择器装上。
+    const scoped = { on: () => () => {} }
+    const registry: AgentRegistryLike = {
+      create: async options => {
+        await options.setup?.(scoped, { session: {} })
+        return { agent: { id: options.sessionId, followup: () => {} } as never, dispose: async () => {} }
+      },
+      resume: async () => { throw new Error('不该走 resume') },
+      get: () => undefined,
+    }
+    const withSetup = new PeerSessions({ registry, cwd: '/tmp/work' })
+    await withSetup.acquire('u1')
+    const ok = await withSetup.selectModel('u1', 0, { provider: 'workbuddy', model: 'glm-5.3' })
+    assert.equal(ok, true)
+    assert.equal(fake.created.length, 0)
+  })
+
+  it('会话内切换模型时不会重建会话', async () => {
+    const fake = fakeRegistry()
+    const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work' })
+    await sessions.acquire('u1')
+    const ok = await sessions.selectModel('u1', 0, { provider: 'workbuddy', model: 'glm-5.3' })
+    assert.equal(ok, false)
+    assert.equal(fake.created.length, 1)
+    assert.equal(fake.resumed.length, 0)
+  })
+
+  it('借用的宿主会话不擅自改模型', async () => {
+    const live = new Map<string, unknown>([[sessionIdFor('u1'), { id: sessionIdFor('u1') }]])
+    const fake = fakeRegistry({ live })
+    const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work' })
+    await sessions.acquire('u1')
+    assert.equal(await sessions.selectModel('u1', 0, { provider: 'p', model: 'm' }), false)
+  })
+
+  it('还没有活会话时切换模型留给下一次创建，不算失败', async () => {
+    const fake = fakeRegistry()
+    const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work' })
+    assert.equal(await sessions.selectModel('u1', 0, { provider: 'p', model: 'm' }), true)
+  })
+
   it('disposeAll 关掉自己创建的 agent', async () => {
     const fake = fakeRegistry()
     const sessions = new PeerSessions({ registry: fake.registry, cwd: '/tmp/work' })

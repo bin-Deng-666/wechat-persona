@@ -1,14 +1,18 @@
 /** Ordered, cancellable text/image/file delivery with durable per-unit outcomes. */
 import { randomUUID } from 'node:crypto'
 import { DEFAULT_REPLY_PLAN, planBubbles, type ReplyPlan } from './bubbles.ts'
+import { splitStickerSegments } from '../stickers/markers.ts'
+import { RET_THROTTLED } from '../ilink/api.ts'
 import type { ConversationStore, DeliveryUnit, DeliveryStatus } from '../chat/history.ts'
 
-export const THROTTLE_CODE = -2
+export const THROTTLE_CODE = RET_THROTTLED
 export function isThrottled(error: unknown): boolean { return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === THROTTLE_CODE }
 export interface SendContext { clientId: string; signal: AbortSignal }
 export type ReplySender = (peerId: string, text: string, contextToken: string | undefined, context: SendContext) => Promise<void>
 export interface ReplyScope { generation: number; activityId: string; signal?: AbortSignal }
 export interface DeliveryReport { status: 'accepted' | 'partial' | 'failed' | 'unknown' | 'cancelled'; units: DeliveryUnit[] }
+/** 发送时再解析令牌：长任务或退避期间可能已有更新的入站消息。 */
+export type ContextTokenSource = string | (() => string | undefined) | undefined
 export interface ReplyQueueOptions {
   send: ReplySender
   sendSticker?: (peerId: string, name: string, token: string | undefined, context: SendContext) => Promise<boolean>
@@ -32,6 +36,10 @@ interface Job {
   controller: AbortController
   ready: Promise<void>
   gapMs: number
+  /** 每次网络尝试前重新取令牌；没有就用单元上已捕获的那个。 */
+  tokenSource?: () => string | undefined
+  /** 关键提示：限流时用更长的退避预算，别和普通气泡抢同一条命。 */
+  urgent: boolean
   resolve: (report: DeliveryReport) => void
   unlink: () => void
 }
@@ -51,41 +59,33 @@ export class ReplyQueue {
   private readonly options: ReplyQueueOptions
   constructor(options: ReplyQueueOptions) { this.options = options }
 
-  enqueue(peerId: string, text: string, contextToken?: string, plan?: ReplyPlan, options?: { immediate?: boolean; scope?: ReplyScope; groupId?: string }): Promise<DeliveryReport> {
+  enqueue(peerId: string, text: string, contextToken?: ContextTokenSource, plan?: ReplyPlan, options?: { immediate?: boolean; scope?: ReplyScope; groupId?: string; urgent?: boolean }): Promise<DeliveryReport> {
     const selected = plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
     const parts: { kind: DeliveryUnit['kind']; value: string }[] = []
-    for (const bubble of planBubbles(text, selected)) {
-      const pattern = /\[表情[:：]([^\]]*)\]/gu
-      let start = 0
-      for (const match of bubble.matchAll(pattern)) {
-        const body = bubble.slice(start, match.index).trim()
-        if (body) parts.push({ kind: 'text', value: body })
-        const name = match[1]?.trim()
-        if (name) parts.push({ kind: 'sticker', value: name })
-        start = match.index + match[0].length
-      }
-      const body = bubble.slice(start).trim()
-      if (body) parts.push({ kind: 'text', value: body })
-    }
-    return this.schedule(peerId, parts, contextToken, selected.gapMs, options?.scope, options?.groupId)
+    // 分条之后再做表情分词：与 markers.ts 共用同一套规则，避免两处漂移。
+    for (const bubble of planBubbles(text, selected)) parts.push(...splitStickerSegments(bubble))
+    return this.schedule(peerId, parts, contextToken, selected.gapMs, options?.scope, options?.groupId ?? randomUUID(), options?.urgent === true)
   }
-  enqueueFiles(peerId: string, paths: readonly string[], token?: string, scope?: ReplyScope, groupId?: string): Promise<DeliveryReport> {
-    return this.schedule(peerId, paths.map(value => ({ kind: 'file', value })), token, 0, scope, groupId)
+  enqueueFiles(peerId: string, paths: readonly string[], token?: ContextTokenSource, scope?: ReplyScope, groupId?: string): Promise<DeliveryReport> {
+    return this.schedule(peerId, paths.map(value => ({ kind: 'file', value })), token, 0, scope, groupId ?? randomUUID(), false)
   }
-  private schedule(peerId: string, parts: { kind: DeliveryUnit['kind']; value: string }[], token: string | undefined, gapMs: number, scope?: ReplyScope, groupId: string = randomUUID()): Promise<DeliveryReport> {
+  private schedule(peerId: string, parts: { kind: DeliveryUnit['kind']; value: string }[], token: ContextTokenSource, gapMs: number, scope: ReplyScope | undefined, groupId: string, urgent: boolean): Promise<DeliveryReport> {
     const controller = new AbortController()
     const abort = () => controller.abort(scope?.signal?.reason)
     if (scope?.signal?.aborted) abort()
     else scope?.signal?.addEventListener('abort', abort, { once: true })
+    const initialToken = typeof token === 'function' ? token() : token
     const units = parts.map((part, index): DeliveryUnit => ({
       id: `${groupId}:${index}`, peerId, groupId, generation: scope?.generation ?? 0,
-      activityId: scope?.activityId ?? 'control', ...part, contextToken: token,
+      activityId: scope?.activityId ?? 'control', ...part, contextToken: initialToken,
       status: 'pending', createdAt: (this.options.now ?? Date.now)(),
     }))
     return new Promise(resolve => {
       const ready = (async () => { for (const unit of units) await this.options.history?.saveDelivery(unit) })()
       void ready.catch(() => {})
-      const job: Job = { peerId, units, controller, ready, gapMs, resolve, unlink: () => scope?.signal?.removeEventListener('abort', abort) }
+      const job: Job = { peerId, units, controller, ready, gapMs, urgent,
+        ...(typeof token === 'function' ? { tokenSource: token } : {}),
+        resolve, unlink: () => scope?.signal?.removeEventListener('abort', abort) }
       const queue = this.queues.get(peerId) ?? []
       queue.push(job); this.queues.set(peerId, queue)
       this.ensureDrain(peerId)
@@ -158,20 +158,26 @@ export class ReplyQueue {
     await job.ready
     let stop = false
     for (const [index, unit] of job.units.entries()) {
-      if (job.controller.signal.aborted || stop) { await this.save(unit, 'cancelled'); continue }
+      if (job.controller.signal.aborted || stop) {
+        // 分清“用户取消”和“前一项失败导致没轮到”：后者属于可补发内容。
+        await this.save(unit, 'cancelled', stop ? '前一条未发出，已取消' : undefined)
+        continue
+      }
       if (index) await this.pause(job.gapMs, job.controller.signal)
       this.options.onChunk?.(job.peerId, index, job.units.length)
-      const sent = await this.send(unit, job.controller.signal)
+      const sent = await this.send(job, unit, job.controller.signal)
       // A missing sticker should not suppress meaningful following text.
       if (!sent && unit.kind !== 'sticker') stop = true
     }
   }
-  private async send(unit: DeliveryUnit, signal: AbortSignal): Promise<boolean> {
+  private async send(job: Job, unit: DeliveryUnit, signal: AbortSignal): Promise<boolean> {
     let attempts = 0, throttles = 0
     for (;;) {
       const last = this.lastSentAt.get(unit.peerId)
       if (last !== undefined) await this.pause(Math.max(0, (this.options.minIntervalMs ?? 0) - ((this.options.now ?? Date.now)() - last)), signal)
       if (signal.aborted) { await this.save(unit, 'cancelled'); return false }
+      // 每次尝试前刷新令牌：限流退避期间用户可能又发了消息，旧令牌未必还能用。
+      if (job.tokenSource !== undefined) unit.contextToken = job.tokenSource() ?? unit.contextToken
       await this.save(unit, 'sending')
       if (signal.aborted) { await this.save(unit, 'cancelled'); return false }
       try {
@@ -194,8 +200,11 @@ export class ReplyQueue {
         const failure = error as { code?: unknown; status?: unknown }
         const rejected = typeof failure?.code === 'number' || ['unsupported', 'ENOENT', 'EACCES'].includes(String(failure?.code)) || (typeof failure?.status === 'number' && failure.status >= 400 && failure.status < 500)
         if (signal.aborted) { await this.save(unit, rejected ? 'cancelled' : 'unknown', String(error)); return false }
-        if (isThrottled(error) && throttles < (this.options.maxThrottleAttempts ?? 5)) {
-          throttles++; await this.pause(Math.min(16000, 2000 * 2 ** (throttles - 1)), signal); continue
+        if (isThrottled(error) && throttles < (job.urgent ? 8 : (this.options.maxThrottleAttempts ?? 6))) {
+          // 线上 -2 会持续几十秒；关键提示等得更久一点，普通气泡不长期占着队列。
+          throttles++
+          await this.pause(Math.min(job.urgent ? 20_000 : 30_000, 2000 * 2 ** (throttles - 1)), signal)
+          continue
         }
         attempts++
         if ((rejected && !isThrottled(error)) || attempts >= (this.options.maxAttempts ?? 3)) {
