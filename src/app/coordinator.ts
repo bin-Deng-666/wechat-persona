@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { watch, type FSWatcher } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -36,7 +36,9 @@ import type { MessageItem } from '../ilink/types.ts'
 import { PeerSessions, SESSION_ID_PREFIX, type AgentHandleLike, type AgentRegistryLike } from '../dsh/sessions.ts'
 import { PeerGenerations } from '../chat/generations.ts'
 import { Channel } from '../wechat/channel.ts'
+import { shouldPersistCursor } from '../wechat/cursor.ts'
 import { TypingIndicator } from '../wechat/typing.ts'
+import { atomicJson } from '../storage/atomic.ts'
 import { createFileLogger, type FileLogger } from './logger.ts'
 
 import { name } from './identity.ts'
@@ -393,9 +395,14 @@ export class Coordinator {
       this.groupTimer = groupTimer
 
       // 游标定期落盘：重启后不重放已经回过的消息。
+      // 基线要跟着落盘一起前进，否则每次轮询都会把同一个值重写一遍——
+      // 长轮询每几秒就返回一次，那会变成一条持续的写盘噪音。
+      let persisted = cursor
       const timer = setInterval(() => {
         const current = channel.getCursor()
-        if (current !== undefined && current !== cursor) void this.writeCursor(account.accountId, current)
+        if (!shouldPersistCursor(persisted, current)) return
+        persisted = current
+        void this.writeCursor(account.accountId, current)
       }, 5_000)
       timer.unref()
       this.cursorTimer = timer
@@ -588,12 +595,15 @@ export class Coordinator {
     try {
       let current: Record<string, string> = {}
       try {
-        current = JSON.parse(await readFile(join(this.dataDir, 'cursor.json'), 'utf8')) as Record<string, string>
+        const parsed: unknown = JSON.parse(await readFile(join(this.dataDir, 'cursor.json'), 'utf8'))
+        if (typeof parsed === 'object' && parsed !== null) current = parsed as Record<string, string>
       } catch {
+        // 文件不存在或坏了：按空对象重写。游标丢了最多是重放一次，不会丢消息。
         current = {}
       }
       current[accountId] = cursor
-      await writeFile(join(this.dataDir, 'cursor.json'), JSON.stringify(current, null, 2), 'utf8')
+      // 原子发布：进程在写到一半时退出，不会留下半个 JSON 让下次启动读不出来。
+      await atomicJson(join(this.dataDir, 'cursor.json'), current)
     } catch (error) {
       this.report('游标落盘失败', { error: String(error) })
     }
