@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WeChat Persona",
+    "description": "Connects WeChat one-to-one chats to DSH: sends and receives over the official Tencent iLink protocol, reuses the host model and tools, and adds persona cards, memory, and a Chinese settings menu inside WeChat."
+  }
+}

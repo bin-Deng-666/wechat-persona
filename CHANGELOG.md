@@ -19,6 +19,10 @@ Versions before `0.2.0` are development builds and were never published.
 - 单文件产品介绍页 `docs/introduction.html`：首屏四张微信实机截图（可放大）、功能、
   中文指令、安装步骤与常见问题；零外部依赖，支持明暗主题与手机布局，可离线打开。
 - 仓库清理：移除文档、测试与归档中的私人称呼和本机路径，归档小程序使用通用名称。
+- 插件展示元数据：`locale/en.json` 与 `locale/zh.json` 提供 `meta.title` 和
+  `meta.description`，`icons/dsh-wechat-persona.svg` 为原创矢量图标（对话气泡与人格脸，
+  靛蓝到青色渐变，未使用任何第三方商标）。`package.json` 导出 `./locale/*.json` 与
+  `./icon`，两项都进 `files`，插件管理器和设置页无需激活插件即可显示。
 
 ### Changed
 

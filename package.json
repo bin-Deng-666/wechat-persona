@@ -3,7 +3,7 @@
   "version": "0.3.0-dev.0",
   "private": true,
   "type": "module",
-  "description": "微信单聊人格聊天通道（DSH 插件，基于腾讯 iLink 官方协议）",
+  "description": "把微信单聊接入 DSH：基于腾讯 iLink 官方协议收发消息、复用宿主的模型与工具、人格卡与记忆、微信内中文设置菜单。",
   "license": "MIT",
   "author": "wechat-persona contributors",
   "homepage": "https://github.com/bin-Deng-666/wechat-persona#readme",
@@ -34,7 +34,9 @@
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json",
-    "./cordis.patch.yml": "./cordis.patch.yml"
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icons/dsh-wechat-persona.svg"
   },
   "dsh": {
     "bundle": {
@@ -42,6 +44,8 @@
     }
   },
   "files": [
+    "icons",
+    "locale",
     "lib",
     "cordis.patch.yml",
     "README.md",
@@ -90,5 +94,6 @@
     "gifuct-js": "^2.1.2",
     "pngjs": "^7.0.0",
     "qrcode-generator": "^2.0.4"
-  }
+  },
+  "icon": "icons/dsh-wechat-persona.svg"
 }

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="wechat-persona">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2B3A8C"/>
+      <stop offset="0.55" stop-color="#245D9E"/>
+      <stop offset="1" stop-color="#0E7C86"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1F2A5E"/>
+      <stop offset="1" stop-color="#0B5F68"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板：靛蓝到青色，不沿用任何现成通讯软件的绿色双气泡商标 -->
+  <rect x="10" y="10" width="108" height="108" rx="26" fill="url(#bg)"/>
+
+  <!-- 后方的对话气泡：压低存在感，只做「不止一句」的暗示 -->
+  <g opacity="0.26">
+    <rect x="70" y="26" width="34" height="22" rx="9" fill="#FFFFFF"/>
+    <path d="M92 45 L96 53 L84 47 Z" fill="#FFFFFF"/>
+  </g>
+
+  <!-- 前方的对话气泡：承载人格，尾巴收在圆角之内 -->
+  <rect x="18" y="42" width="76" height="54" rx="20" fill="#FFFFFF"/>
+  <path d="M32 93 L23 111 L53 94 Z" fill="#FFFFFF"/>
+
+  <!-- 人格的脸：五官放大加粗，保证 24–36px 下仍是「一张脸」而不是模糊白块 -->
+  <circle cx="42" cy="63" r="6.4" fill="url(#ink)"/>
+  <circle cx="70" cy="63" r="6.4" fill="url(#ink)"/>
+  <path d="M38 78 Q56 90 74 78" stroke="url(#ink)" stroke-width="6" stroke-linecap="round" fill="none"/>
+</svg>
