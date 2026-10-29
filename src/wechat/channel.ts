@@ -31,6 +31,18 @@ import type { MemoryActivity } from '../memory/capture.ts'
 
 export interface ChannelAccount { baseUrl: string; token: string; userId?: string }
 export interface SessionEventsLike { on(event: 'session/event', listener: (session: { id: unknown }, event: unknown) => void): () => void }
+/**
+ * 报平安的默认节奏：20 秒一句，最多持续 200 秒。
+ *
+ * 这两个数不是随手定的：20 秒 × 10 = 200 秒，正好等于人格卡要求的最小文案条数
+ * （`persona/card.ts` 的 `MIN_PROGRESS_LINES`）。一轮用完不重样，下一轮才重新洗牌。
+ *
+ * ⚠️ 改这两个值之前先读 `test/wechat/notices.test.ts` 里的配额断言：它会拦住
+ * 「一轮配额超过文案条数」的改法，否则用户会在一轮里看到重复的句子。
+ */
+export const DEFAULT_NOTICE_INTERVAL_MS = 20_000
+export const DEFAULT_NOTICE_WINDOW_MS = 200_000
+
 export interface ChannelOptions {
   api: ApiClient
   account: ChannelAccount
@@ -70,17 +82,20 @@ export interface ChannelOptions {
   /** 交给宿主后多久仍无进展就主动告知用户；0 关闭。 */
   stallAfterMs?: number
   /**
-   * 干活期间隔多久报一句平安，毫秒；默认 30_000，0 关闭。
+   * 干活期间隔多久报一句平安，毫秒；默认 20_000，0 关闭。
    *
    * 报平安的句子来自人格卡的 `progress`，没写就用内置库。
    */
   noticeIntervalMs?: number
   /**
-   * 报平安最多持续多久（从交给宿主算起），默认 5 分钟。
+   * 报平安最多持续多久（从交给宿主算起），默认 200 秒。
    *
    * 这是「一轮上限」的来源：上限 = ceil(窗口 / 间隔)，跟着节奏一起变，
    * 而不是另写一个死数字——改间隔时不会立刻把配额打满。
    * 超过窗口就安静下来，长任务交给卡住看门狗兜底。
+   *
+   * 默认值和人格卡的 10 条文案是一对：20 秒 × 10 = 200 秒，
+   * 正好一轮用完不重样。改这里要看 `persona/card.ts` 的 `MIN_PROGRESS_LINES`。
    */
   noticeWindowMs?: number
 }
@@ -441,9 +456,9 @@ export class Channel {
    * 重建取句器会让已发过的句子重新进入池子，正是「连发之后开始重复」的成因。
    */
   private startNotices(conversation: PeerConversation, activity: ConversationActivity): void {
-    const interval = this.options.noticeIntervalMs ?? 30_000
+    const interval = this.options.noticeIntervalMs ?? DEFAULT_NOTICE_INTERVAL_MS
     if (interval <= 0) return
-    const window = this.options.noticeWindowMs ?? 300_000
+    const window = this.options.noticeWindowMs ?? DEFAULT_NOTICE_WINDOW_MS
     const now = (this.options.now ?? Date.now)()
     const existing = this.notices.get(conversation.peerId)
     if (existing !== undefined) clearTimeout(existing.timer)
@@ -457,7 +472,7 @@ export class Channel {
       sent: sameRound ? existing.sent : 0,
       deadline: now + window,
     }
-    // 上限由窗口推导：30 秒间隔 = 最多 10 条，60 秒间隔 = 最多 5 条。
+    // 上限由窗口推导：20 秒间隔、200 秒窗口 = 最多 10 条。
     // ⚠️ 与 `persona/card.ts` 的 MIN_PROGRESS_LINES 是同一对约束：人格卡至少要写够
     // 这么多条才能保证一轮内不重复。调大窗口（或调小间隔）会让配额超过 10，
     // 那时必须同步上调那个下限，否则一轮内会开始重样。
