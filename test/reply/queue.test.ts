@@ -173,6 +173,60 @@ describe('ReplyQueue', () => {
     assert.ok(attempts > normalAttempts, `关键提示应多试几次：${attempts} vs ${normalAttempts}`)
   })
 
+  it('报平安被限流时直接作废，不消耗重试次数', async () => {
+    let attempts = 0
+    const queue = new ReplyQueue({
+      send: async () => { attempts += 1; throw Object.assign(new Error('throttled'), { code: -2 }) },
+      sleep: async () => {},
+      lowPriorityThrottleAttempts: 0,
+    })
+    const report = await queue.enqueue('p1', '报平安', undefined, undefined, { priority: 'low' })
+    assert.equal(report.status, 'cancelled')
+    assert.equal(attempts, 1, '只应尝试一次')
+  })
+
+  it('回答在限流下的重试预算高于普通消息', async () => {
+    const attemptsOf = async (priority: 'high' | 'normal' | 'low'): Promise<number> => {
+      let attempts = 0
+      const queue = new ReplyQueue({
+        send: async () => { attempts += 1; throw Object.assign(new Error('throttled'), { code: -2 }) },
+        sleep: async () => {},
+        highPriorityThrottleAttempts: 5,
+        maxThrottleAttempts: 2,
+        lowPriorityThrottleAttempts: 0,
+      })
+      await queue.enqueue('p1', 'x', undefined, undefined, { priority })
+      return attempts
+    }
+    const high = await attemptsOf('high')
+    const normal = await attemptsOf('normal')
+    const low = await attemptsOf('low')
+    assert.equal(high, 6, `回答应试满 5 次退避 + 1 次最终：${high}`)
+    assert.equal(normal, 3, `普通消息应试满 2 次退避 + 1 次最终：${normal}`)
+    assert.equal(low, 1, `报平安不应重试：${low}`)
+  })
+
+  it('回答在排队时，报平安主动让路', async () => {
+    const sent: string[] = []
+    const yields: string[] = []
+    let release: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const queue = new ReplyQueue({
+      send: async (_peer, text) => { await gate; sent.push(text) },
+      sleep: async () => {},
+      onYield: (_peer, text) => yields.push(text),
+    })
+    // 回答先入队并占住发送，报平安此时进来应被丢弃。
+    const answer = queue.enqueue('p1', '答案', undefined, undefined, { priority: 'high' })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const notice = await queue.enqueue('p1', '报平安', undefined, undefined, { priority: 'low' })
+    assert.equal(notice.status, 'cancelled')
+    assert.deepEqual(yields, ['报平安'])
+    release?.()
+    await answer
+    assert.deepEqual(sent, ['答案'])
+  })
+
   it('同一 peer 的发送保序', async () => {
     const order: string[] = []
     const send = async (_peer: string, text: string): Promise<void> => {

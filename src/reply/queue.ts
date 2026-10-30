@@ -7,6 +7,14 @@ import type { ConversationStore, DeliveryUnit, DeliveryStatus } from '../chat/hi
 
 export const THROTTLE_CODE = RET_THROTTLED
 export function isThrottled(error: unknown): boolean { return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === THROTTLE_CODE }
+/**
+ * 投递优先级。
+ *
+ * - `high`：真正的回答、失败反馈。丢了用户就等于没收到东西。
+ * - `normal`：用户显式要求的消息（命令回执、菜单）。
+ * - `low`：报平安、进度旁白。本来就可有可无，绝不能和回答抢限流预算。
+ */
+export type ReplyPriority = 'high' | 'normal' | 'low'
 export interface SendContext { clientId: string; signal: AbortSignal }
 export type ReplySender = (peerId: string, text: string, contextToken: string | undefined, context: SendContext) => Promise<void>
 export interface ReplyScope { generation: number; activityId: string; signal?: AbortSignal }
@@ -20,7 +28,13 @@ export interface ReplyQueueOptions {
   history?: ConversationStore
   maxAttempts?: number
   maxThrottleAttempts?: number
+  /** `high` 优先级的限流重试预算，默认 12：回答要跨过整个限流窗口。 */
+  highPriorityThrottleAttempts?: number
+  /** `low` 优先级的限流重试预算，默认 0：报平安被限流就直接放弃，把额度留给回答。 */
+  lowPriorityThrottleAttempts?: number
   onGiveUp?: (peerId: string, text: string, error: unknown) => void
+  /** 低优先级因为回答在排队而主动让路时回调，只用于记日志。 */
+  onYield?: (peerId: string, text: string) => void
   retryDelayMs?: number
   minIntervalMs?: number
   plan?: ReplyPlan
@@ -38,8 +52,8 @@ interface Job {
   gapMs: number
   /** 每次网络尝试前重新取令牌；没有就用单元上已捕获的那个。 */
   tokenSource?: () => string | undefined
-  /** 关键提示：限流时用更长的退避预算，别和普通气泡抢同一条命。 */
-  urgent: boolean
+  /** 投递优先级：决定限流时谁让路、谁用更长的退避预算。 */
+  priority: ReplyPriority
   resolve: (report: DeliveryReport) => void
   unlink: () => void
 }
@@ -59,17 +73,19 @@ export class ReplyQueue {
   private readonly options: ReplyQueueOptions
   constructor(options: ReplyQueueOptions) { this.options = options }
 
-  enqueue(peerId: string, text: string, contextToken?: ContextTokenSource, plan?: ReplyPlan, options?: { immediate?: boolean; scope?: ReplyScope; groupId?: string; urgent?: boolean }): Promise<DeliveryReport> {
+  enqueue(peerId: string, text: string, contextToken?: ContextTokenSource, plan?: ReplyPlan, options?: { immediate?: boolean; scope?: ReplyScope; groupId?: string; urgent?: boolean; priority?: ReplyPriority }): Promise<DeliveryReport> {
     const selected = plan ?? this.options.plan ?? DEFAULT_REPLY_PLAN
     const parts: { kind: DeliveryUnit['kind']; value: string }[] = []
     // 分条之后再做表情分词：与 markers.ts 共用同一套规则，避免两处漂移。
     for (const bubble of planBubbles(text, selected)) parts.push(...splitStickerSegments(bubble))
-    return this.schedule(peerId, parts, contextToken, selected.gapMs, options?.scope, options?.groupId ?? randomUUID(), options?.urgent === true)
+    // `urgent` 是旧调用点仍在用的写法，语义等价于 high。
+    const priority = options?.priority ?? (options?.urgent === true ? 'high' : 'normal')
+    return this.schedule(peerId, parts, contextToken, selected.gapMs, options?.scope, options?.groupId ?? randomUUID(), priority)
   }
-  enqueueFiles(peerId: string, paths: readonly string[], token?: ContextTokenSource, scope?: ReplyScope, groupId?: string): Promise<DeliveryReport> {
-    return this.schedule(peerId, paths.map(value => ({ kind: 'file', value })), token, 0, scope, groupId ?? randomUUID(), false)
+  enqueueFiles(peerId: string, paths: readonly string[], token?: ContextTokenSource, scope?: ReplyScope, groupId?: string, priority: ReplyPriority = 'normal'): Promise<DeliveryReport> {
+    return this.schedule(peerId, paths.map(value => ({ kind: 'file', value })), token, 0, scope, groupId ?? randomUUID(), priority)
   }
-  private schedule(peerId: string, parts: { kind: DeliveryUnit['kind']; value: string }[], token: ContextTokenSource, gapMs: number, scope: ReplyScope | undefined, groupId: string, urgent: boolean): Promise<DeliveryReport> {
+  private schedule(peerId: string, parts: { kind: DeliveryUnit['kind']; value: string }[], token: ContextTokenSource, gapMs: number, scope: ReplyScope | undefined, groupId: string, priority: ReplyPriority): Promise<DeliveryReport> {
     const controller = new AbortController()
     const abort = () => controller.abort(scope?.signal?.reason)
     if (scope?.signal?.aborted) abort()
@@ -83,10 +99,19 @@ export class ReplyQueue {
     return new Promise(resolve => {
       const ready = (async () => { for (const unit of units) await this.options.history?.saveDelivery(unit) })()
       void ready.catch(() => {})
-      const job: Job = { peerId, units, controller, ready, gapMs, urgent,
+      const job: Job = { peerId, units, controller, ready, gapMs, priority,
         ...(typeof token === 'function' ? { tokenSource: token } : {}),
         resolve, unlink: () => scope?.signal?.removeEventListener('abort', abort) }
       const queue = this.queues.get(peerId) ?? []
+      // 低优先级遇到正在排队或正在发送的回答：直接让路，不进队列、不占限流预算。
+      // 报平安晚一秒没关系，但把额度耗光会让真答案发不出去。
+      const highAhead = queue.some(queued => queued.priority === 'high') || this.active.get(peerId)?.priority === 'high'
+      if (priority === 'low' && highAhead) {
+        this.options.onYield?.(peerId, units[0]?.value ?? '')
+        for (const unit of units) void this.save(unit, 'cancelled', '回答在排队，报平安让路')
+        resolve(result(units))
+        return
+      }
       queue.push(job); this.queues.set(peerId, queue)
       this.ensureDrain(peerId)
     })
@@ -200,14 +225,28 @@ export class ReplyQueue {
         const failure = error as { code?: unknown; status?: unknown }
         const rejected = typeof failure?.code === 'number' || ['unsupported', 'ENOENT', 'EACCES'].includes(String(failure?.code)) || (typeof failure?.status === 'number' && failure.status >= 400 && failure.status < 500)
         if (signal.aborted) { await this.save(unit, rejected ? 'cancelled' : 'unknown', String(error)); return false }
-        if (isThrottled(error) && throttles < (job.urgent ? 8 : (this.options.maxThrottleAttempts ?? 6))) {
-          // 线上 -2 会持续几十秒；关键提示等得更久一点，普通气泡不长期占着队列。
+        if (isThrottled(error)) {
+          // -2 是微信侧的限流，不是内容问题：等一会儿重发就能过。
+          // 但预算必须按优先级分——报平安烧掉的重试次数，正是真答案发不出去的原因。
+          const budget = job.priority === 'high'
+            ? (this.options.highPriorityThrottleAttempts ?? 12)
+            : job.priority === 'low'
+              ? (this.options.lowPriorityThrottleAttempts ?? 0)
+              : (this.options.maxThrottleAttempts ?? 6)
+          if (throttles >= budget) {
+            // 低优先级的报平安被限流：直接作废。它不是失败，别让用户看到告警。
+            await this.save(unit, job.priority === 'low' ? 'cancelled' : 'failed', String(error))
+            if (job.priority !== 'low') this.options.onGiveUp?.(unit.peerId, unit.value, error)
+            return false
+          }
           throttles++
-          await this.pause(Math.min(job.urgent ? 20_000 : 30_000, 2000 * 2 ** (throttles - 1)), signal)
+          // 回答等得起：退避上限放到 60 秒，跨过整个限流窗口再试。
+          const ceiling = job.priority === 'high' ? 60_000 : 30_000
+          await this.pause(Math.min(ceiling, 2_000 * 2 ** (throttles - 1)), signal)
           continue
         }
         attempts++
-        if ((rejected && !isThrottled(error)) || attempts >= (this.options.maxAttempts ?? 3)) {
+        if (rejected || attempts >= (this.options.maxAttempts ?? 3)) {
           await this.save(unit, rejected ? 'failed' : 'unknown', String(error))
           this.options.onGiveUp?.(unit.peerId, unit.value, error)
           return false
