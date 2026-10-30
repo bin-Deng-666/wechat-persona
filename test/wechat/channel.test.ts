@@ -848,12 +848,12 @@ describe('卡住与连续入站', () => {
 })
 
 describe('报平安', () => {
-  function setup(options: { noticeIntervalMs?: number; personaRoot?: string; personaId?: string } = {}) {
+  function setup(options: { noticeIntervalMs?: number; personaRoot?: string; personaId?: string; replies?: ReplyQueue } = {}) {
     const { sessions, delivered } = fakeSessions()
     const { events, emit } = fakeEvents()
     const sent: { peerId: string; text: string; token: string | undefined }[] = []
     const reports: { line: string; detail?: unknown }[] = []
-    const replies = new ReplyQueue({ send: async (peerId, text, token) => { sent.push({ peerId, text, token }) }, sleep: async () => {} })
+    const replies = options.replies ?? new ReplyQueue({ send: async (peerId, text, token) => { sent.push({ peerId, text, token }) }, sleep: async () => {} })
     const channel = new Channel({
       api: {} as ApiClient,
       account: { baseUrl: 'https://x.cn', token: 't', userId: 'wxid-owner' },
@@ -970,5 +970,33 @@ describe('报平安', () => {
     assert.doesNotMatch(names.join('\n'), /句在此/u)
     await channel.stop()
     await rm(root, { force: true, recursive: true })
+  })
+
+  it('报平安以 low 优先级入队，回答以 high 优先级入队', async () => {
+    // 直接观察队列收到的优先级：这是「发太快」问题的根，必须在通道层钉住。
+    const seen: { text: string; priority: string }[] = []
+    const replies = new ReplyQueue({
+      send: async (_peer, text) => { seen.push({ text, priority: 'sent' }) },
+      sleep: async () => {},
+    })
+    const originalEnqueue = replies.enqueue.bind(replies)
+    replies.enqueue = (peerId, text, token, plan, options) => {
+      seen.push({ text, priority: options?.priority ?? 'normal' })
+      return originalEnqueue(peerId, text, token, plan, options)
+    }
+    const { channel, emit } = setup({ noticeIntervalMs: 20, replies })
+    await channel.handle(userMessage())
+    await new Promise(resolve => setTimeout(resolve, 60))
+    const noticePriorities = seen.filter(item => item.priority !== 'sent').map(item => item.priority)
+    assert.ok(noticePriorities.length >= 1, `没发出报平安：${JSON.stringify(seen)}`)
+    assert.ok(noticePriorities.every(p => p === 'low'), `报平安优先级应为 low：${JSON.stringify(noticePriorities)}`)
+
+    seen.length = 0
+    emit('channel-persona-wxid-owner', { type: 'turn/start', data: { turn: 1 } })
+    emit('channel-persona-wxid-owner', textStep(1, '答案在这里。'))
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const answer = seen.find(item => item.text === '答案在这里。')
+    assert.equal(answer?.priority, 'high', `回答优先级应为 high：${JSON.stringify(seen)}`)
+    await channel.stop()
   })
 })

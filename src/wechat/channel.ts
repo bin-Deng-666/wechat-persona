@@ -15,7 +15,7 @@ import { ChatControls } from './controls.ts'
 import type { ModelCatalog } from './controls.ts'
 import type { PreparedMedia } from '../dsh/attachments.ts'
 import type { CompactOutcome } from '../dsh/compaction.ts'
-import type { ReplyQueue, DeliveryReport } from '../reply/queue.ts'
+import type { ReplyQueue, DeliveryReport, ReplyPriority } from '../reply/queue.ts'
 import { extractAssistantText, extractProgressText, extractToolName } from '../dsh/events.ts'
 import { PeerSessions, sessionIdFor } from '../dsh/sessions.ts'
 import { PersonaStore } from '../persona/store.ts'
@@ -32,16 +32,17 @@ import type { MemoryActivity } from '../memory/capture.ts'
 export interface ChannelAccount { baseUrl: string; token: string; userId?: string }
 export interface SessionEventsLike { on(event: 'session/event', listener: (session: { id: unknown }, event: unknown) => void): () => void }
 /**
- * 报平安的默认节奏：60 秒一句，最多持续 600 秒。
+ * 报平安的默认节奏：90 秒一句，最多持续 900 秒。
  *
- * 这两个数不是随手定的：60 秒 × 10 = 600 秒，正好等于人格卡要求的最小文案条数
- * （`persona/card.ts` 的 `MIN_PROGRESS_LINES`）。一轮用完不重样，下一轮才重新洗牌。
+ * 60 秒实测仍然偏密——10:28 那轮连发 9 条后，紧接着的真答案撞上 -2 限流丢了。
+ * 90 秒 × 10 = 900 秒，仍然等于人格卡要求的最小文案条数（`persona/card.ts` 的
+ * `MIN_PROGRESS_LINES`），一轮用完不重样，但每分钟的密度降下来了。
  *
  * ⚠️ 改这两个值之前先读 `test/wechat/notices.test.ts` 里的配额断言：它会拦住
  * 「一轮配额超过文案条数」的改法，否则用户会在一轮里看到重复的句子。
  */
-export const DEFAULT_NOTICE_INTERVAL_MS = 60_000
-export const DEFAULT_NOTICE_WINDOW_MS = 600_000
+export const DEFAULT_NOTICE_INTERVAL_MS = 90_000
+export const DEFAULT_NOTICE_WINDOW_MS = 900_000
 const PROGRESS_MIN_GAP_MS = 4_000
 const TOOL_PROGRESS_AFTER_MS = 15_000
 
@@ -456,14 +457,14 @@ export class Channel {
     try { return await this.options.compact(conversation.peerId, conversation.generation, activity.signal) }
     finally { if (!activity.signal.aborted) activity.phase = 'idle' }
   }
-  private notice(conversation: PeerConversation, text: string, activity?: ConversationActivity, urgent = false): void {
+  private notice(conversation: PeerConversation, text: string, activity?: ConversationActivity, urgent = false, priority: ReplyPriority = urgent ? 'high' : 'normal'): void {
     const plan = this.plans.get(conversation.peerId) ?? DEFAULT_REPLY_PLAN
     const scope = activity ? conversation.scope(activity) : conversation.controlScope()
     this.track(this.eventQueue(conversation.peerId).run(async () => {
       if (scope?.signal?.aborted) return
       // 真正发送时再取令牌：排队期间来了新消息，就用新的，别拿几分钟前的。
       const token = () => this.contextTokens.get(conversation.peerId) ?? activity?.contextToken
-      const delivery = this.options.replies.enqueue(conversation.peerId, text, token, { ...plan, splitMode: 'none' }, { immediate: true, scope, urgent })
+      const delivery = this.options.replies.enqueue(conversation.peerId, text, token, { ...plan, splitMode: 'none' }, { immediate: true, scope, priority })
       if (urgent) {
         // 关键提示若最终没发出去，写进持久上下文：下一次对话由模型自然带出，而不是彻底静默。
         this.track(delivery.then(async report => {
@@ -486,7 +487,8 @@ export class Channel {
     const previous = this.progressUpdates.get(conversation.peerId)
     if (previous?.text === text || (previous !== undefined && now - previous.at < PROGRESS_MIN_GAP_MS)) return
     this.progressUpdates.set(conversation.peerId, { text, at: now })
-    this.notice(conversation, text, activity)
+    // 旁白是 low：回答一旦排队，它就自动让路，不占限流预算。
+    this.notice(conversation, text, activity, false, 'low')
     // 有实质内容时停止空泛的报平安；后续仍无正文则由低频兜底接管。
     this.stopNotices(conversation.peerId)
     this.startNotices(conversation, activity)
@@ -597,7 +599,7 @@ export class Channel {
         if (line !== undefined) {
           state.sent += 1
           this.options.report?.('报平安', { peerId: conversation.peerId.slice(0, 12), activity: activity.id.slice(0, 8), nth: state.sent, max: maxNotices, chars: line.length })
-          this.notice(conversation, line, activity)
+          this.notice(conversation, line, activity, false, 'low')
         }
         schedule()
       }, interval)
@@ -664,7 +666,7 @@ export class Channel {
         if (scope?.signal?.aborted) return
         // 长任务可能跑了几分钟；每次尝试都取这期间最新收到的令牌。
         const token = () => this.contextTokens.get(conversation.peerId) ?? activity.contextToken
-        this.track(this.options.replies.enqueue(conversation.peerId, expandLocationTokens(classified.text), token, this.plans.get(conversation.peerId), { scope, groupId })
+        this.track(this.options.replies.enqueue(conversation.peerId, expandLocationTokens(classified.text), token, this.plans.get(conversation.peerId), { scope, groupId, priority: 'high' })
           .then(report => { this.reportDelivery(conversation.peerId, report); this.failureFeedback(conversation, activity, report) }))
       }))
     })
@@ -680,7 +682,7 @@ export class Channel {
       const groupId = `${sessionIdFor(conversation.peerId, conversation.generation)}:files:${event.seq ?? `${activity.id}:${createHash('sha256').update(JSON.stringify(paths)).digest('hex')}`}`
       if ((await this.history.history(conversation.peerId)).deliveries.some(unit => unit.groupId === groupId)) return
       const token = () => this.contextTokens.get(conversation.peerId) ?? activity.contextToken
-      this.track(this.options.replies.enqueueFiles(conversation.peerId, paths, token, scope, groupId)
+      this.track(this.options.replies.enqueueFiles(conversation.peerId, paths, token, scope, groupId, 'high')
         .then(report => { this.reportDelivery(conversation.peerId, report); if (report.status === 'failed' || report.status === 'unknown') this.notice(conversation, '文件未确认发出，可以让我重试。') }))
     }))
   }

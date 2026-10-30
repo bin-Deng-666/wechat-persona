@@ -321,6 +321,8 @@ export class Coordinator {
           // The durable delivery outcome is shown to the next model request.
           // A direct fallback would bypass ordering and cancellation.
         },
+        // 报平安给回答让路是设计行为，不是失败，单独记一行。
+        onYield: (peerId, text) => { this.report('报平安让路', { peerId, chars: text.length }) },
         // 2 秒是线上验证过的保守节奏；密集报平安已移除，减少真正答案被限流的概率。
         minIntervalMs: 2_000,
       })
