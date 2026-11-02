@@ -76,7 +76,7 @@
     "@deepseek-ai/schemastery": "^3.18.4",
     "@types/node": "^24.10.1",
     "@types/pngjs": "^6.0.5",
-    "tsdown": "^0.23.2",
+    "tsdown": "^0.23.4",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
